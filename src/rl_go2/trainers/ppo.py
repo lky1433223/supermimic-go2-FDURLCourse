@@ -10,7 +10,7 @@ from rsl_rl.runners import OnPolicyRunner
 from tensordict import TensorDict
 
 from rl_go2.env import QuadrupedEnv
-from rl_go2.observations import OBSERVATION_TERMS
+from rl_go2.tasks import get_task_type
 
 
 class RslRlEnv(VecEnv):
@@ -51,7 +51,8 @@ def save_run_spec(config, output):
     meshes = sorted((Path(asset).parent / "assets").glob("*"))
     metadata = {
         "schema": "rl-go2.policy/v1", "quaternion_order": "wxyz", "world_up": "z", "units": "SI",
-        "observation_terms": OBSERVATION_TERMS, "control": config["robot"],
+        "task": config["task"]["name"],
+        "observation_terms": get_task_type(config["task"]["name"]).observation_terms, "control": config["robot"],
         "control_dt": config["scene"]["sim_options"]["dt"] * config["robot"]["control_decimation"],
         "versions": {name: version(name) for name in ("torch", "genesis-world", "mujoco", "rsl-rl-lib")},
         "asset_hashes": {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in [Path(asset), *meshes]},

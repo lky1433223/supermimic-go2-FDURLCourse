@@ -2,8 +2,10 @@
 from copy import deepcopy
 from pathlib import Path
 import os
+import json
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import torch
 
@@ -12,6 +14,7 @@ from rl_go2.config import load_experiment, load_scene
 from rl_go2.control import JointPositionControl
 from rl_go2.env import QuadrupedEnv
 from rl_go2.state import RobotState, rotate_inverse
+from rl_go2.tasks import TASK_TYPES
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -41,6 +44,37 @@ class FakeBackend:
         pass
 
 
+class ProbeTask:
+    """Test-only task: different observation size, no velocity-command fields."""
+
+    observation_terms = [("position_x", 1), ("phase", 1)]
+
+    @staticmethod
+    def validate_config(config, robot):
+        pass
+
+    def __init__(self, config, default_positions, num_envs, device, dt, seed):
+        self.phase = torch.zeros(num_envs, device=device)
+
+    def reset(self, env_ids, state, updates):
+        self.phase[env_ids] = 0
+
+    def observe(self, state, previous_action):
+        return torch.stack((state.position[:, 0], self.phase), dim=-1)
+
+    def reward(self, state, action, previous_action, torque):
+        return torch.ones_like(self.phase)
+
+    def terminated(self, state):
+        return torch.zeros_like(self.phase, dtype=torch.bool)
+
+    def on_step_end(self, state, episode_steps):
+        self.phase.copy_(episode_steps)
+
+    def context(self):
+        return {"phase": self.phase}
+
+
 class FrameworkTests(unittest.TestCase):
     def setUp(self):
         self.config = load_experiment(ROOT / "configs/experiments/flat_ppo.yaml")
@@ -52,6 +86,41 @@ class FrameworkTests(unittest.TestCase):
         controller = JointPositionControl(self.config["robot"], "cpu")
         torque = controller.torque(torch.full((2, 12), 100.), FakeBackend(self.config).read_state())
         torch.testing.assert_close(torque, controller.limits.expand(2, -1))
+
+    def test_config_selects_a_different_task_without_walk_assumptions(self):
+        from rl_go2.trainers.ppo import make_runner, save_run_spec
+
+        with patch.dict(TASK_TYPES, {"probe": f"{__name__}:ProbeTask"}):
+            config = deepcopy(self.config)
+            config["task"] = {"name": "probe", "episode_seconds": 20}
+            env = QuadrupedEnv(config, backend=FakeBackend(config), record_transitions=True)
+            self.assertIsInstance(env.task, ProbeTask)
+            observation, reward, done, info = env.step(torch.zeros(2, 12))
+            self.assertEqual(observation.shape, (2, 2))
+            torch.testing.assert_close(reward, torch.ones(2))
+            self.assertFalse(done.any())
+            torch.testing.assert_close(info["transition"].context["phase"], torch.zeros(2))
+            env.step(torch.zeros(2, 12))
+            torch.testing.assert_close(info["transition"].context["phase"], torch.zeros(2))
+            runner = make_runner(env)
+            with torch.inference_mode():
+                self.assertEqual(runner.get_inference_policy()(runner.env.get_observations()).shape, (2, 12))
+            with tempfile.TemporaryDirectory() as tmp:
+                output = Path(tmp) / "probe"
+                save_run_spec(config, output)
+                metadata = json.loads((output / "policy_spec.json").read_text())
+                self.assertEqual(metadata["task"], "probe")
+                self.assertEqual(metadata["observation_terms"], [["position_x", 1], ["phase", 1]])
+
+    def test_task_validation_runs_before_backend_creation(self):
+        config = deepcopy(self.config)
+        config["task"]["name"] = "not_implemented"
+        with self.assertRaisesRegex(ValueError, "Unknown task"):
+            QuadrupedEnv(config)
+        config["task"]["name"] = "flat_walk"
+        config["task"]["tracking_sigma"] = 0
+        with self.assertRaisesRegex(ValueError, "tracking_sigma"):
+            QuadrupedEnv(config)
 
     def test_timeouts_keep_pre_reset_transition(self):
         self.config["task"]["episode_seconds"] = 0.02

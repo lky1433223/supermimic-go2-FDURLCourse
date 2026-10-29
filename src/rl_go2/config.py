@@ -5,6 +5,8 @@ import math
 
 import yaml
 
+from rl_go2.tasks import validate_task_name
+
 
 def read_yaml(path):
     with Path(path).open() as stream:
@@ -89,16 +91,8 @@ def load_experiment(path):
         raise ValueError("control_decimation must be a positive integer")
     if robot["action_clip"] <= 0 or robot["action_scale"] <= 0:
         raise ValueError("action_clip and action_scale must be positive")
-    if config["task"]["name"] != "flat_walk":
-        raise NotImplementedError("Only flat_walk is implemented")
-    if len(names) != 12:
-        raise ValueError("flat_walk currently expects a 12-joint quadruped")
     task = config["task"]
-    for key in ("episode_seconds", "command_resample_seconds", "tracking_sigma"):
-        if not math.isfinite(task[key]) or task[key] <= 0:
-            raise ValueError(f"{key} must be finite and positive")
-    ranges = task["command_ranges"]
-    if len(ranges) != 3 or any(len(pair) != 2 or pair[1] < pair[0]
-                               or not all(math.isfinite(x) for x in pair) for pair in ranges):
-        raise ValueError("command_ranges must be three finite ordered pairs")
+    validate_task_name(task["name"])
+    if not math.isfinite(task["episode_seconds"]) or task["episode_seconds"] <= 0:
+        raise ValueError("episode_seconds must be finite and positive")
     return config

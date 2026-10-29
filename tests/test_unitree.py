@@ -16,7 +16,7 @@ from rl_go2.hardware.unitree import (
     decode_low_state, position_command, torque_command,
 )
 from rl_go2.state import RobotState
-from rl_go2.tasks import FlatWalkTask
+from rl_go2.tasks.flat_walk import FlatWalkTask
 
 ROOT = Path(__file__).resolve().parents[1]
 HAS_SDK = find_spec("unitree_sdk2py") is not None

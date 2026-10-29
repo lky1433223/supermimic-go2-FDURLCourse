@@ -1,6 +1,6 @@
 # RL-Go2
 
-强化学习机械狗作业：Genesis 训练，MuJoCo 做 sim2sim 验证。当前是框架及平地速度跟踪初始任务，尚未训练出行走策略。
+强化学习机械狗作业：Genesis 训练，MuJoCo 做 sim2sim 验证。已跑通 CPU 小规模 PPO 训练与跨引擎策略回放，尚未验证稳定行走。
 
 ## 环境与资产
 
@@ -31,7 +31,7 @@ src/rl_go2/
   control.py         两后端共用的逐物理步 PD 控制
   observations.py    仿真和 SDK 共用的策略观测构造
   hardware/          宇树 SDK2 状态适配、只读订阅、离线命令报文
-  tasks.py           平地速度跟踪任务
+  tasks/             任务选择、生命周期协议，以及平地速度跟踪实现
   env.py             控制步、重置、统计及可选状态转移记录
   curriculum.py      课程接口；当前只实现固定难度
   trainers/ppo.py    RSL-RL VecEnv 适配、训练和策略导出
@@ -46,11 +46,12 @@ box 的 `size` 是三条完整边长。单位为米/秒/弧度，右手系 Z-up�
 `dt` 是一次 backend.step 的物理时间；控制周期为 `dt * control_decimation`，默认 0.005 × 4 = 0.02 秒。
 Genesis 内部 substeps 固定为 1，避免控制周期被隐式改变。
 
-共享策略观测为 45 维：机身坐标角速度(3)、投影重力(3)、速度命令(3)、默认角度偏移(12)、关节速度(12)、上一步裁剪动作(12)。
+当前平地任务的策略观测为 45 维：机身坐标角速度(3)、投影重力(3)、速度命令(3)、默认角度偏移(12)、关节速度(12)、上一步裁剪动作(12)。其他任务可以定义自己的观测。
 动作经裁剪与缩放后得到默认关节角的偏移，逐物理步执行共享 PD 并限制力矩。当前不模拟执行延迟。
 MuJoCo 初期只实现 CPU 单环境评估；Genesis 支持批量环境。设备选择 cpu/cuda/mps，实际训练设备与驱动需在训练前验证。
 
 `Transition` 接口记录重置前的状态转移，单独保留 terminated/truncated。
+其中 `context` 是任务提供的目标/阶段张量字典，不要求每个任务都有速度命令。
 课程接口在 episode reset 时调用，返回任务参数更新；当前更新通道支持命令范围。
 世界模型和策略未来共用环境，但 SuperMimic 的拟合和模型内展开训练尚未实现。
 
@@ -71,7 +72,7 @@ Menagerie 模型的零关节角中性姿态会触发 Genesis 的 qpos0 限位提
 
 ## 后续平地训练
 
-以下命令会开始训练，本轮搭框架时未执行。默认奖励与参数是起点，需要通过正式实验验证。
+以下命令会开始训练。默认奖励与参数是起点，需要通过正式实验验证。
 
 ```bash
 uv run --extra train rl-go2 train --device cuda --num-envs 4096 --iterations 1000 --output runs/flat-ppo-001
@@ -95,6 +96,34 @@ uv run --extra train rl-go2 evaluate --run-dir runs/flat-ppo-001 --backend genes
 
 接口参考：[Genesis](https://genesis-world.readthedocs.io/en/latest/user_guide/overview/installation.html)、
 [RSL-RL](https://github.com/leggedrobotics/rsl_rl)、[MuJoCo Python](https://mujoco.readthedocs.io/en/stable/python.html)。
+
+## 添加其他任务
+
+实验配置的 `task` 指向任务 YAML，任务 YAML 的 `name` 在 `src/rl_go2/tasks/__init__.py` 的 `TASK_TYPES` 中选择实现。
+当前只注册了 `flat_walk`，跳跃尚未实现。新增任务时：
+
+1. 在 `tasks/` 添加任务类，实现 `Task` 协议：参数校验、任务重置、观测、奖励、终止、步末更新和任务上下文。
+2. 在 `TASK_TYPES` 增加名称到 `模块:类名` 的映射，并新增任务 YAML 与实验 YAML。
+3. 在任务类的 `observation_terms` 中声明观测项及维数；策略导出使用此任务的定义。
+
+`QuadrupedEnv` 保留物理控制和 episode 计数；任务自行管理命令采样或阶段状态。`reset` 在物理重置后调用，接收重置状态与课程参数更新。
+`on_step_end` 在奖励、终止判断和自动重置后调用，用于准备下一步观测；刚重置环境的 episode 计数为零。
+走路任务的命令重采样逻辑位于 `tasks/flat_walk.py`，环境不再读取 `commands` 或重采样周期。
+任务特有参数由任务类校验，通用配置加载器只检查任务名称及 episode 时长等共同字段。
+测试中使用无速度命令、只有 2 维观测的任务，验证同一环境、PPO 适配层及策略元数据支持其他任务定义。
+
+## 已完成的本机流程验证
+
+2026-10-30 在 Apple Silicon Mac 的 CPU 上执行了 4 个 Genesis 环境、5 轮 PPO 更新，共采集 480 条状态转移；日志 loss 均为有限值，网络参数确实发生更新，并成功导出策略。
+同一策略在 MuJoCo 上完成 1000 个控制步（20 秒仿真），观测和奖励均为有限值，并执行一次自动重置。
+这是运行链路验证，不是稳定行走或迁移性能结论。当前 12 项测试全部通过，包含双仿真后端及 SDK 离线测试。
+
+本机结果保存在 Git 忽略的 `runs/flat-ppo-local-check-001/`：`verification.json` 是验证报告，`train.log` 是训练日志，`policy.pt` 是导出策略，`mujoco-rollout.mp4` 是 6 秒回放。
+
+```bash
+OMP_NUM_THREADS=2 uv run --extra train --extra unitree rl-go2 train --device cpu --num-envs 4 --iterations 5 --output runs/flat-ppo-local-check-002
+uv run --extra train --extra unitree rl-go2 evaluate --run-dir runs/flat-ppo-local-check-002 --backend mujoco --steps 1000
+```
 
 ## 宇树 Go2 SDK2
 

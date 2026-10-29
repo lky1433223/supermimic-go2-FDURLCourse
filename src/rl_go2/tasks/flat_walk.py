@@ -1,11 +1,27 @@
+import math
+
 import torch
 
 from rl_go2.state import rotate_inverse
-from rl_go2.observations import policy_observation
+from rl_go2.observations import OBSERVATION_TERMS, policy_observation
 
 
 class FlatWalkTask:
     """Minimal velocity tracking task; reward coefficients are initial values, not tuned results."""
+
+    observation_terms = OBSERVATION_TERMS
+
+    @staticmethod
+    def validate_config(config, robot):
+        if len(robot["joint_names"]) != 12:
+            raise ValueError("flat_walk expects a 12-joint quadruped")
+        for key in ("command_resample_seconds", "tracking_sigma"):
+            if not math.isfinite(config[key]) or config[key] <= 0:
+                raise ValueError(f"{key} must be finite and positive")
+        ranges = config["command_ranges"]
+        if len(ranges) != 3 or any(len(pair) != 2 or pair[1] < pair[0]
+                                   or not all(math.isfinite(x) for x in pair) for pair in ranges):
+            raise ValueError("command_ranges must be three finite ordered pairs")
 
     def __init__(self, config, default_positions, num_envs, device, dt, seed):
         self.config = config
@@ -17,6 +33,16 @@ class FlatWalkTask:
         self.generator = torch.Generator().manual_seed(seed)
         self.ranges = torch.tensor(config["command_ranges"], device=device).expand(num_envs, -1, -1).clone()
         self.resample_steps = max(1, round(config["command_resample_seconds"] / dt))
+
+    def reset(self, env_ids, state, updates):
+        self.resample(env_ids, updates)
+
+    def on_step_end(self, state, episode_steps):
+        ids = ((episode_steps > 0) & (episode_steps % self.resample_steps == 0)).nonzero(as_tuple=False).flatten()
+        self.resample(ids)
+
+    def context(self):
+        return {"commands": self.commands}
 
     def resample(self, env_ids, updates=None):
         updates = updates or {}
