@@ -125,6 +125,26 @@ OMP_NUM_THREADS=2 uv run --extra train --extra unitree rl-go2 train --device cpu
 uv run --extra train --extra unitree rl-go2 evaluate --run-dir runs/flat-ppo-local-check-002 --backend mujoco --steps 1000
 ```
 
+## ICC 训练及第 700 轮 sim2sim 评测
+
+2026-10-30 将提交 `62092f0` 部署到 ICC 的 `/home/lky/RL-Go2`，用 uv 安装锁定的训练依赖。
+训练配置为 Genesis、4096 个并行环境、1000 轮 PPO；使用物理 GPU 2（A100 80GB），通过 `CUDA_VISIBLE_DEVICES` 的 UUID 限制可见设备，未使用 GPU 3–6。
+服务器 Python 为 3.12.3，PyTorch 为 2.13.0+cu130；通过 CUDA 张量计算和 32 环境仿真检查后，在 tmux 会话 `rl-go2-flat-gpu2` 中启动训练。
+服务器结果目录为 `/home/lky/RL-Go2/runs/flat-ppo-icc-gpu2-001`，日志为 `/home/lky/RL-Go2/runs/launches/icc-flat-ppo-gpu2-001/train.log`。
+
+取第 700 轮 checkpoint，在本机 MuJoCo 中使用相同机器人资产、控制和任务配置，评估随机命令种子 1–5，每组 20 秒，共 5000 个控制步、100 秒仿真：
+
+| 指标 | 结果 |
+|---|---:|
+| 摔倒终止次数 | 0 |
+| 前进速度 RMSE | 0.06846 m/s |
+| 横向速度 RMSE | 0.02720 m/s |
+| 转向角速度 RMSE | 0.04504 rad/s |
+| 平均回报 | 28.50337 |
+
+评测时保持 checkpoint 权重不变，没有在 MuJoCo 微调。结果说明该 checkpoint 在这五组平地命令下能够持续运动并跟踪速度；尚未验证复杂地形、教室场景或真机表现。
+本机详细报告、评测脚本、模型和 12 秒视频位于 Git 忽略的 `runs/icc-flat-ppo-checkpoint-700/`，本提交只记录参数和结果，不包含训练产物。
+
 ## 宇树 Go2 SDK2
 
 硬件接入独立于仿真后端，采用官方 [unitree_sdk2_python](https://github.com/unitreerobotics/unitree_sdk2_python)，
