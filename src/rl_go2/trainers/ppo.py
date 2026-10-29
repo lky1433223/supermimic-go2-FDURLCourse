@@ -10,7 +10,7 @@ from rsl_rl.runners import OnPolicyRunner
 from tensordict import TensorDict
 
 from rl_go2.env import QuadrupedEnv
-from rl_go2.tasks import OBSERVATION_TERMS
+from rl_go2.observations import OBSERVATION_TERMS
 
 
 class RslRlEnv(VecEnv):

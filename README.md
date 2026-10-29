@@ -29,6 +29,8 @@ src/rl_go2/
   state.py           统一批量状态、坐标变换
   backends/          PhysicsBackend 协议、Genesis 和 MuJoCo 实现
   control.py         两后端共用的逐物理步 PD 控制
+  observations.py    仿真和 SDK 共用的策略观测构造
+  hardware/          宇树 SDK2 状态适配、只读订阅、离线命令报文
   tasks.py           平地速度跟踪任务
   env.py             控制步、重置、统计及可选状态转移记录
   curriculum.py      课程接口；当前只实现固定难度
@@ -93,3 +95,39 @@ uv run --extra train rl-go2 evaluate --run-dir runs/flat-ppo-001 --backend genes
 
 接口参考：[Genesis](https://genesis-world.readthedocs.io/en/latest/user_guide/overview/installation.html)、
 [RSL-RL](https://github.com/leggedrobotics/rsl_rl)、[MuJoCo Python](https://mujoco.readthedocs.io/en/stable/python.html)。
+
+## 宇树 Go2 SDK2
+
+硬件接入独立于仿真后端，采用官方 [unitree_sdk2_python](https://github.com/unitreerobotics/unitree_sdk2_python)，
+锁定提交 `65691c8a8bc53b98d3976dba4dbf9d5d20b2e7f5`，使用可选 `unitree` extra。
+仿真训练不需要安装这个 extra。SDK 原始依赖要求 `cyclonedds==0.10.2`；Python 3.12 没有对应预编译 wheel，需要原生库与本地构建。
+
+本机已在 `.deps/cyclonedds` 安装原生库；换机器时如无可用 CycloneDDS，可按下面步骤准备（需要 CMake、C 编译器）：
+
+```bash
+python3 scripts/bootstrap_cyclonedds.py
+export CYCLONEDDS_HOME="$PWD/.deps/cyclonedds"
+uv sync --extra train --extra unitree --locked
+uv run --extra train --extra unitree python scripts/install_unitree_crc.py
+uv run --extra train --extra unitree python scripts/check_unitree.py
+```
+
+本地构建的依赖不纳入 Git，源码下载有固定版本及 SHA-256 校验。`install_unitree_crc.py` 补齐官方 SDK 源码中存在、但上游 wheel 未包含的 Linux CRC 动态库及许可证，不修改 SDK Python 代码。
+以后运行 SDK 相关命令保留 `--extra unitree`，否则 uv 会移除该可选依赖。
+
+`check_unitree.py` 默认完全离线：构造官方 LowState/LowCmd，验证 45 维观测、CRC 与序列化，不初始化 DDS。
+`UnitreeStateReader` 只订阅 `rt/lowstate`，连接参数位于 `configs/hardware/go2.yaml`。
+只有显式传入网卡才会连接，例如 `python scripts/check_unitree.py --interface enp2s0`（本轮未执行）。
+它会校验消息头和 CRC，并在接收超时时报错；不会创建命令 Publisher，也不会切换机器人运动模式。
+
+SDK 电机槽位为 FR、FL、RR、RL，每腿 hip/thigh/calf；通过名称映射到机器人配置中的标准顺序。
+IMU 角速度已经在机身坐标系中，不会再次逆旋转。底层状态只提供 IMU 和关节等字段，不伪造仿真的机身位置或线速度；当前 actor 恰好不依赖这两项。
+`Go2Telemetry.observation()` 和仿真任务调用同一个观测函数。
+
+`position_command()` 构造机器人内置 PD 位置控制报文；`torque_command()` 则关闭内置 PD，裁剪力矩后生成外部控制报文，可用于后续对接共享 PD 控制器。两者均只返回 SDK 消息，不发送。
+真机策略部署循环、控制权交接、时序/状态新鲜度监测、停机处理和硬件验证尚未实现；这里完成的是 SDK 接口接入，不是可直接上机的部署程序。
+
+```bash
+# 离线测试 SDK 与现有框架；加入 RL_GO2_TEST_GENESIS=1 可同时检查 Genesis
+uv run --extra train --extra unitree python -m unittest discover -s tests -v
+```

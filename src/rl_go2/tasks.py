@@ -1,12 +1,7 @@
 import torch
 
 from rl_go2.state import rotate_inverse
-
-
-OBSERVATION_TERMS = [
-    ("base_angular_velocity_body", 3), ("projected_gravity_body", 3), ("commands", 3),
-    ("joint_position_offset", 12), ("joint_velocity", 12), ("previous_action", 12),
-]
+from rl_go2.observations import policy_observation
 
 
 class FlatWalkTask:
@@ -44,13 +39,9 @@ class FlatWalkTask:
                 rotate_inverse(state.quaternion, gravity))
 
     def observe(self, state, previous_action):
-        _, angular, gravity = self.body_state(state)
-        scales = self.config["observation_scales"]
-        command_scales = torch.tensor(scales["commands"], device=self.device)
-        return torch.cat((angular * scales["angular_velocity"], gravity,
-                          self.commands * command_scales,
-                          (state.joint_position - self.default) * scales["joint_position"],
-                          state.joint_velocity * scales["joint_velocity"], previous_action), dim=-1)
+        angular = rotate_inverse(state.quaternion, state.angular_velocity)
+        return policy_observation(state.quaternion, angular, state.joint_position, state.joint_velocity,
+                                  self.commands, previous_action, self.default, self.config["observation_scales"])
 
     def reward(self, state, action, previous_action, torque):
         linear, angular, gravity = self.body_state(state)

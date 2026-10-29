@@ -11,6 +11,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+unitree = ["unitree-sdk2py"]
 train = [
     "genesis-world>=1.4.5,<2",
     "rsl-rl-lib>=5,<6",
@@ -26,6 +27,9 @@ packages = ["src/rl_go2"]
 
 [project.scripts]
 rl-go2 = "rl_go2.cli:main"
+
+[tool.uv.sources]
+unitree-sdk2py = { url = "https://github.com/unitreerobotics/unitree_sdk2_python/archive/65691c8a8bc53b98d3976dba4dbf9d5d20b2e7f5.tar.gz" }
 
 [[tool.uv.index]]
 name = "pypi"

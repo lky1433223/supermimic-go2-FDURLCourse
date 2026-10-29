@@ -61,6 +61,15 @@ wheels = [
 ]
 
 [[package]]
+name = "click"
+version = "8.5.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c7/0e/7fa0ef50764b67090eca4114772a2abf8b6148198475e54c660b97caeee6/click-8.5.0.tar.gz", hash = "sha256:ba0d2089de75ea0310e2dde03160e6ca10009947fb95a182f9b54021bb272e34", size = 382235, upload-time = "2026-08-26T13:33:14.56Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/58/50/6c0d534c5f134586a8e1ba4e330569e32f057e33372ae556463212fb4cd3/click-8.5.0-py3-none-any.whl", hash = "sha256:255bc9599cf7748b4b1a446ccc735421bd08a2ae529a8b88597d3de5664ee360", size = 125251, upload-time = "2026-08-26T13:33:12.928Z" },
+]
+
+[[package]]
 name = "cloudpickle"
 version = "3.1.2"
 source = { registry = "https://pypi.org/simple" }
@@ -191,6 +200,15 @@ sdist = { url = "https://files.pythonhosted.org/packages/a9/95/a3dbbb5028f35eafb
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e7/05/c19819d5e3d95294a6f5947fb9b9629efb316b96de511b418c53d245aae6/cycler-0.12.1-py3-none-any.whl", hash = "sha256:85cef7cff222d8644161529808465972e51340599459b8ac3ccbac5a854e0d30", size = 8321, upload-time = "2023-10-07T05:32:16.783Z" },
 ]
+
+[[package]]
+name = "cyclonedds"
+version = "0.10.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "rich-click" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/62/88/4b440f5916976234838989c3214222a5abc6fd48009a992c4dc22a86c04f/cyclonedds-0.10.2.tar.gz", hash = "sha256:f834962eabbdcdf4e9cd75cf87222f3c5ef22d9cb9e7ed651d9a8710fe984a30", size = 156849, upload-time = "2022-09-09T07:04:19.798Z" }
 
 [[package]]
 name = "dataclasses-json"
@@ -1373,6 +1391,20 @@ wheels = [
 ]
 
 [[package]]
+name = "rich-click"
+version = "1.9.9"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "click" },
+    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "rich" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/96/3e/5688fdd83aea416de336582a274f2bc8236b5c261b04c11e17bc262786ad/rich_click-1.9.9.tar.gz", hash = "sha256:324cba7513cd4187ee92b2eef21f071714e45be062458c8b157bd7e0c81103e3", size = 75866, upload-time = "2026-09-05T19:20:14.799Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b5/51/b2b91aec091e86bc961e5164f00207d89f133cc82b5ddad541d2132ea819/rich_click-1.9.9-py3-none-any.whl", hash = "sha256:365e7a9d0adb42e41ea832a0a12e02c44c079a26536dee688125eb9814f97274", size = 71910, upload-time = "2026-09-05T19:20:13.587Z" },
+]
+
+[[package]]
 name = "rl-go2"
 version = "0.1.0"
 source = { editable = "." }
@@ -1388,6 +1420,9 @@ train = [
     { name = "rsl-rl-lib" },
     { name = "torch" },
 ]
+unitree = [
+    { name = "unitree-sdk2py" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -1397,8 +1432,9 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6,<7" },
     { name = "rsl-rl-lib", marker = "extra == 'train'", specifier = ">=5,<6" },
     { name = "torch", marker = "extra == 'train'", specifier = ">=2.6,<3" },
+    { name = "unitree-sdk2py", marker = "extra == 'unitree'", url = "https://github.com/unitreerobotics/unitree_sdk2_python/archive/65691c8a8bc53b98d3976dba4dbf9d5d20b2e7f5.tar.gz" },
 ]
-provides-extras = ["train"]
+provides-extras = ["unitree", "train"]
 
 [[package]]
 name = "rsl-rl-lib"
@@ -1693,6 +1729,24 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/a3/26/b09b8010994eccc3c09092e6b34058f36a460eea2d4c3e8b910c695975a0/typing_inspection-0.4.4.tar.gz", hash = "sha256:547274fa6b0a561ccf549cc9524b999a578e737d015d8709d021f9d0d13bea47", size = 76928, upload-time = "2026-08-12T12:37:25.997Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/67/81/4add07e5172b7ac40d8ed5ff580409a7801a4fe26d529bdd915401dabfbe/typing_inspection-0.4.4-py3-none-any.whl", hash = "sha256:65b8397ba37ccbce054456aaccddfc91e6e3083c92824df348d96ca832f3f147", size = 14750, upload-time = "2026-08-12T12:37:24.648Z" },
+]
+
+[[package]]
+name = "unitree-sdk2py"
+version = "1.0.1"
+source = { url = "https://github.com/unitreerobotics/unitree_sdk2_python/archive/65691c8a8bc53b98d3976dba4dbf9d5d20b2e7f5.tar.gz" }
+dependencies = [
+    { name = "cyclonedds" },
+    { name = "numpy" },
+    { name = "opencv-python" },
+]
+sdist = { hash = "sha256:b74e43fb6535929ec2a9efc1685e96111932ac6a9d7105b9cc7564ebaf6b7d58" }
+
+[package.metadata]
+requires-dist = [
+    { name = "cyclonedds", specifier = "==0.10.2" },
+    { name = "numpy" },
+    { name = "opencv-python" },
 ]
 
 [[package]]

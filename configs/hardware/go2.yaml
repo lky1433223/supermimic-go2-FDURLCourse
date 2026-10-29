@@ -1,0 +1,5 @@
+# SDK2 hardware layer, separate from simulation backends. No actuator publisher yet.
+domain_id: 0
+interface: null  # Set the actual robot-facing Ethernet interface before connecting.
+lowstate_topic: rt/lowstate
+read_timeout_seconds: 1.0
