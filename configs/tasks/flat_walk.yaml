@@ -1,0 +1,25 @@
+name: flat_walk
+episode_seconds: 20
+command_resample_seconds: 4
+command_ranges:
+  - [0.2, 0.8]
+  - [0, 0]
+  - [-0.5, 0.5]
+termination_min_height: 0.12
+termination_min_upright: 0.5
+target_height: 0.30
+tracking_sigma: 0.25
+observation_scales:
+  angular_velocity: 0.25
+  joint_position: 1.0
+  joint_velocity: 0.05
+  commands: [2.0, 2.0, 0.25]
+reward_weights:
+  tracking_linear: 1.0
+  tracking_yaw: 0.5
+  vertical_velocity: -2.0
+  roll_pitch_velocity: -0.05
+  orientation: -1.0
+  height: -10.0
+  torque: -0.0001
+  action_rate: -0.01

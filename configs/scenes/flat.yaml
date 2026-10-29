@@ -1,0 +1,19 @@
+schema: rl-go2.scene/v1
+# Unisis-style subset. SI units, Z-up, quaternion order wxyz.
+scene:
+  sim_options:
+    dt: 0.005
+    gravity: [0, 0, -9.81]
+  entities:
+    - id: ground
+      type: plane
+      position: [0, 0, 0]
+      fixed: true
+      friction: 0.8
+    - id: go2
+      type: mjcf
+      robot: true
+      file: ../../assets/robots/go2/go2.xml
+      position: [0, 0, 0.42]
+      rotation: [1, 0, 0, 0]
+  sensors: []
