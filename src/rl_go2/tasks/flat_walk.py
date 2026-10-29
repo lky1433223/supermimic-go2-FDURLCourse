@@ -44,12 +44,15 @@ class FlatWalkTask:
     def context(self):
         return {"commands": self.commands}
 
+    def external_force(self, state, episode_steps):
+        return None
+
     def resample(self, env_ids, updates=None):
         updates = updates or {}
         if updates.keys() - {"command_ranges"}:
             raise NotImplementedError("Curriculum currently supports command_ranges updates only")
         if "command_ranges" in updates:
-            ranges = torch.tensor(updates["command_ranges"], device=self.device)
+            ranges = self.ranges.new_tensor(updates["command_ranges"])
             if ranges.shape != (3, 2) or (ranges[:, 1] < ranges[:, 0]).any():
                 raise ValueError("command_ranges must be three ordered [min, max] pairs")
             self.ranges[env_ids] = ranges

@@ -1,0 +1,73 @@
+scene: ../scenes/flat.yaml
+robot: ../robots/go2.yaml
+task: ../tasks/push_walk.yaml
+backend: genesis
+device: cpu
+num_envs: 4
+seed: 1
+curriculum:
+  name: push_force
+  stages:
+  - after_steps: 0
+    force_range_n:
+    - 5
+    - 20
+  - after_steps: 10000000
+    force_range_n:
+    - 20
+    - 40
+  - after_steps: 30000000
+    force_range_n:
+    - 40
+    - 60
+  - after_steps: 60000000
+    force_range_n:
+    - 60
+    - 80
+trainer:
+  name: ppo
+  randomize_initial_episode_lengths: false
+  iterations: 1000
+  runner:
+    num_steps_per_env: 24
+    save_interval: 100
+    logger: tensorboard
+    obs_groups:
+      actor:
+      - policy
+      critic:
+      - policy
+    actor:
+      class_name: MLPModel
+      hidden_dims:
+      - 256
+      - 128
+      - 64
+      activation: elu
+      obs_normalization: true
+      distribution_cfg:
+        class_name: GaussianDistribution
+        init_std: 1.0
+        std_type: scalar
+    critic:
+      class_name: MLPModel
+      hidden_dims:
+      - 256
+      - 128
+      - 64
+      activation: elu
+      obs_normalization: true
+    algorithm:
+      class_name: PPO
+      clip_param: 0.2
+      desired_kl: 0.01
+      entropy_coef: 0.01
+      gamma: 0.99
+      lam: 0.95
+      learning_rate: 0.0003
+      max_grad_norm: 1.0
+      num_learning_epochs: 5
+      num_mini_batches: 4
+      schedule: adaptive
+      use_clipped_value_loss: true
+      value_loss_coef: 1.0

@@ -33,7 +33,7 @@ src/rl_go2/
   hardware/          宇树 SDK2 状态适配、只读订阅、离线命令报文
   tasks/             任务选择、生命周期协议，以及平地速度跟踪实现
   env.py             控制步、重置、统计及可选状态转移记录
-  curriculum.py      课程接口；当前只实现固定难度
+  curriculum.py      固定难度和按采样步数推进的推力课程
   trainers/ppo.py    RSL-RL VecEnv 适配、训练和策略导出
   trainers/supermimic.py  世界模型接口，训练明确报 NotImplementedError
   cli.py             配置检查、smoke、训练、策略评估
@@ -52,7 +52,7 @@ MuJoCo 初期只实现 CPU 单环境评估；Genesis 支持批量环境。设备
 
 `Transition` 接口记录重置前的状态转移，单独保留 terminated/truncated。
 其中 `context` 是任务提供的目标/阶段张量字典，不要求每个任务都有速度命令。
-课程接口在 episode reset 时调用，返回任务参数更新；当前更新通道支持命令范围。
+课程接口在 episode reset 时调用，返回任务参数更新；当前任务支持命令范围或推力范围更新。
 世界模型和策略未来共用环境，但 SuperMimic 的拟合和模型内展开训练尚未实现。
 
 ## 检查框架（不训练）
@@ -82,7 +82,7 @@ uv run --extra train tensorboard --logdir runs
 CPU 开发调试可用 `--device cpu --num-envs 4`。输出目录须为新目录，避免覆盖结果。
 训练目录保存完整解析配置、依赖版本、模型和网格哈希、策略约定、RSL-RL checkpoint 和含观测归一化的 `policy.pt`。
 配置快照当前使用本机绝对资产路径；移动到其他机器时须迁移资产并调整路径，不属于独立部署包。
-课程当前为 `name: none`；训练恢复和自适应课程留待后续实现。
+平地任务的课程为 `name: none`；支持用 `--init-checkpoint` 初始化权重，但不恢复优化器、迭代计数或课程进度。
 
 ```bash
 # 已训练策略的 sim2sim rollout，默认无窗口
@@ -100,9 +100,9 @@ uv run --extra train rl-go2 evaluate --run-dir runs/flat-ppo-001 --backend genes
 ## 添加其他任务
 
 实验配置的 `task` 指向任务 YAML，任务 YAML 的 `name` 在 `src/rl_go2/tasks/__init__.py` 的 `TASK_TYPES` 中选择实现。
-当前只注册了 `flat_walk`，跳跃尚未实现。新增任务时：
+当前注册了 `flat_walk` 和 `push_walk`，跳跃尚未实现。新增任务时：
 
-1. 在 `tasks/` 添加任务类，实现 `Task` 协议：参数校验、任务重置、观测、奖励、终止、步末更新和任务上下文。
+1. 在 `tasks/` 添加任务类，实现 `Task` 协议：参数校验、任务重置、观测、奖励、终止、外力、步末更新和任务上下文。没有扰动时 `external_force` 返回 `None`。
 2. 在 `TASK_TYPES` 增加名称到 `模块:类名` 的映射，并新增任务 YAML 与实验 YAML。
 3. 在任务类的 `observation_terms` 中声明观测项及维数；策略导出使用此任务的定义。
 
@@ -144,6 +144,49 @@ uv run --extra train --extra unitree rl-go2 evaluate --run-dir runs/flat-ppo-loc
 
 评测时保持 checkpoint 权重不变，没有在 MuJoCo 微调。结果说明该 checkpoint 在这五组平地命令下能够持续运动并跟踪速度；尚未验证复杂地形、教室场景或真机表现。
 本机详细报告、评测脚本、模型和 12 秒视频位于 Git 忽略的 `runs/icc-flat-ppo-checkpoint-700/`，本提交只记录参数和结果，不包含训练产物。
+
+## 抗推扰任务及课程
+
+`configs/experiments/push_ppo.yaml` 选择 `push_walk`。它保持平地任务的 45 维观测、控制与奖励，训练时每隔 3–6 秒，从世界坐标系的 ±X/±Y 方向随机施加 0.2 秒外力。力作用于基座连杆质心，单位 N，每个物理子步重新施加，停止后清零，不通过改速度伪造推力。
+任务为下一控制步生成推力；推力不进入 actor 观测，但会记录到模型学习用的 `Transition.context.external_force_world`。
+
+按新收集的状态转移数量推进课程，新强度范围只在 episode reset 时生效：
+
+| 状态转移数量 | 推力范围 |
+|---|---|
+| 0–1000 万 | 5–20 N |
+| 1000–3000 万 | 20–40 N |
+| 3000–6000 万 | 40–60 N |
+| 6000 万以后 | 60–80 N |
+
+用完成的平地 checkpoint 初始化 actor、critic 及其归一化状态，重新初始化优化器、迭代和课程。会检查关节顺序、控制参数、时间步和观测布局是否一致；学习率从 0.0003 开始。关闭初始 episode 计数随机化，避免初次落地时触发本应延后的推力。
+
+```bash
+uv run --extra train rl-go2 train --config configs/experiments/push_ppo.yaml --device cuda --num-envs 4096 --iterations 1000 --init-checkpoint runs/flat-ppo-icc-gpu2-001/model_999.pt --output runs/push-ppo-001
+```
+
+受推基线使用已完成的 1000 轮平地策略。在 MuJoCo 中固定 0.3/0.5/0.7 m/s 命令，各次测试在第 3 秒施力 0.2 秒；每个非零强度分别测试世界坐标四个方向，共 12 个条件。每次最多 8 秒，摔倒立即结束。
+恢复定义为水平速度误差小于 0.1 m/s、偏航角速度绝对值小于 0.15 rad/s、倾角小于 15°，并连续保持 0.5 秒。恢复耗时从推力结束开始计算；均值只统计成功恢复的条件，未恢复/摔倒条件单独计数。
+
+| 推力 | 摔倒次数 / 固定测试条件数 |
+|---|---|
+| 0 N | 0 / 3 |
+| 20 N | 1 / 12 |
+| 40 N | 6 / 12 |
+| 60 N | 8 / 12 |
+| 80 N | 9 / 12 |
+| 100 N | 9 / 12 |
+
+这是有限固定条件的基线，不是总体成功率估计。报告和视频保存在本机忽略目录 `runs/push-baseline-001/`。对训练后的策略使用同一协议比较：
+
+```bash
+uv run --extra train python scripts/evaluate_push.py --run-dir runs/push-ppo-001 --output runs/push-evaluation-001 --video
+```
+
+同一基线已在 ICC CPU 复测，各强度下摔倒计数一致，本机副本为 `runs/push-baseline-001/icc-assessment.json`。
+已在 ICC 的 GPU 2 启动 4096 环境、1000 轮抗扰动训练，结果目录 `/home/lky/RL-Go2/runs/push-ppo-icc-gpu2-001`，tmux 会话为 `rl-go2-push-gpu2`。
+日志和启动参数位于 `/home/lky/RL-Go2/runs/launches/icc-push-ppo-gpu2-001/`，该目录保留带 SHA-256 的源码快照。
+启动脚本在训练成功、策略导出后，自动在 CPU 上运行同一受推评测，写入结果目录的 `push-assessment/assessment.json`；不使用 GPU 3–6。
 
 ## 宇树 Go2 SDK2
 
