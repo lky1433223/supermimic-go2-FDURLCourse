@@ -1,6 +1,6 @@
 # RL-Go2
 
-强化学习机械狗作业：Genesis 训练，MuJoCo 做 sim2sim 验证。已跑通 CPU 小规模 PPO 训练与跨引擎策略回放，尚未验证稳定行走。
+强化学习机械狗作业：Genesis 训练，MuJoCo 做 sim2sim 验证。PPO 已有平地验证；SuperMimic 式引导训练已通过前进/转向跟踪验收，纯从零模型训练和复杂地形仍未验证成功。
 
 ## 环境与资产
 
@@ -35,7 +35,8 @@ src/rl_go2/
   env.py             控制步、重置、统计及可选状态转移记录
   curriculum.py      课程接口；当前只实现固定难度
   trainers/ppo.py    RSL-RL VecEnv 适配、训练和策略导出
-  trainers/supermimic.py  世界模型接口，训练明确报 NotImplementedError
+  trainers/supermimic.py  世界模型、模型内 actor–critic 训练与策略导出
+  trainers/model_learning.py  按环境 replay、局部坐标动力学和归一化
   cli.py             配置检查、smoke、训练、策略评估
 ```
 
@@ -53,7 +54,7 @@ MuJoCo 初期只实现 CPU 单环境评估；Genesis 支持批量环境。设备
 `Transition` 接口记录重置前的状态转移，单独保留 terminated/truncated。
 其中 `context` 是任务提供的目标/阶段张量字典，不要求每个任务都有速度命令。
 课程接口在 episode reset 时调用，返回任务参数更新；当前更新通道支持命令范围。
-世界模型和策略未来共用环境，但 SuperMimic 的拟合和模型内展开训练尚未实现。
+SuperMimic 已接入同一环境，使用 replay 多步拟合和模型内可微 actor–critic 更新；见下文。
 
 ## 检查框架（不训练）
 
@@ -180,3 +181,107 @@ IMU 角速度已经在机身坐标系中，不会再次逆旋转。底层状态�
 # 离线测试 SDK 与现有框架；加入 RL_GO2_TEST_GENESIS=1 可同时检查 Genesis
 uv run --extra train --extra unitree python -m unittest discover -s tests -v
 ```
+
+## SuperMimic Go2 平地速度跟踪
+
+已跑通的方案是 **PPO 引导预热 + 行为约束下的可微世界模型优化**。actor 随机初始化，不复制 PPO 网络权重；
+训练时用已有 PPO 策略采集一部分走路数据并提供监督动作，部署时只运行独立 actor。
+纯从零的模型训练对照仍未达到跟踪验收，不能把这里的结果称为无专家先验的原论文复现，也没有证据优于 PPO 或单独监督预热。
+
+算法参考 [SuperMimic](https://arxiv.org/abs/2610.28480) 和
+[Zhengtianjin/go2-supermimic](https://github.com/Zhengtianjin/go2-supermimic)，相关 MIT 许可见
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+### 复现与独立验收
+
+```bash
+uv sync --extra train --locked
+# 需与当前 Go2 的关节顺序、PD、动作缩放和 45 维观测兼容的 TorchScript 策略。
+# 本机已验证 driver 的绝对路径见下方说明；仓库不附带教师权重。
+uv run --extra train rl-go2 train --config configs/experiments/flat_supermimic_guided.yaml \
+  --driver-policy /absolute/path/to/compatible-go2-policy.pt --output runs/flat-supermimic-guided-001
+uv run --extra train python scripts/evaluate_tracking.py --run-dir runs/flat-supermimic-guided-001 \
+  --output runs/flat-supermimic-guided-001/tracking-validation.json --require-tracking
+uv run --extra train python scripts/evaluate_tracking.py --run-dir runs/flat-supermimic-guided-001 \
+  --seeds 201 202 203 204 205 206 207 208 209 210 \
+  --output runs/flat-supermimic-guided-001/tracking-heldout.json --require-tracking
+# 导出策略推理不需要 --driver-policy，也不会读取教师模型。
+uv run --extra train rl-go2 evaluate --run-dir runs/flat-supermimic-guided-001 --backend mujoco --steps 1000
+```
+
+已验证配置为 Genesis CPU、32 环境、900 轮：16 个环境由当前 actor 采集，16 个由 driver 采集。
+前 600 轮每轮拟合世界模型、执行 4 次监督 actor 更新；随后 300 轮优化 32 步 imagined reward，并用真实状态上的行为损失约束偏移。
+世界模型隐藏层为 128×128，actor 为 128×128，训练窗口为 8 步。
+预热 actor 学习率 0.001，模型阶段 actor 学习率 0.00002，行为约束权重 5.0。
+`iterations: 900` 是固定验证协议确定的早停配置；更长训练会出现 sim2sim 退化，不能仅按 imagined return 选择 checkpoint。
+GPU 可覆盖 `--device cuda --num-envs ...`，但不同规模尚未重新调优，不能直接继承本机性能结论。
+
+`flat_supermimic.yaml` 保留无监督预热的研究对照，默认不使用 driver，不是已证明能学会步态的推荐配方。
+两种配置默认 `bootstrap_weight: 0`，采用短期奖励和 soft survival 的消融目标。
+设为 1 可启用末端 critic 和 imagined TD(lambda) 拟合，但该分支尚未验证稳定跟踪，不能用于声明训练成功。
+`check_supermimic.py` 显式启用 critic，30 轮只验证更新、导出和仿真链路，不用于速度性能验收。
+
+### 为什么旧训练没有改善
+
+- **覆盖不足。** 旧检查只有 9632 条转移，多数接近站立。采样轨迹上旧 actor 动作标准差约 0.10，而走路 driver 约 0.96。
+  旧模型在走路轨迹上 8 步前进速度预测误差约 0.19 m/s；单步损失下降没有证明步态动力学正确。
+- **critic 的梯度主导了错误方向。** 一个 64 状态 probe 中，完整目标梯度范数 4.23，短期奖励梯度 0.055，方向余弦 −0.79。
+  小规模模型误差与只在 imagination 中拟合的价值估计会相互放大。平地配方先关闭这个末端价值目标。
+- **动力学输入不符合当前控制器的因果性。** 无执行延迟的外部 PD 在完整 RobotState 下不依赖 previous_action，旧模型却学到了显著依赖。
+  已移除该输入；previous_action 仍保留在策略观测和动作平滑奖励里。回归测试验证其对模型输出没有影响。
+- **模型优化仍会偏离可靠步态。** 仅加入 driver 数据或去掉 critic，未使当前小规模纯模型训练达标。
+  引导预热解决冷启动；较弱行为约束在继续更新后仍出现摔倒，因此采用更强约束、较小步长和真实仿真早停。
+
+当前 actor 目标是 `-imagined_return + behavior_weight * MSE(actor(real_obs), driver(real_obs))`。
+模型阶段仍会计算并应用穿过冻结世界模型的奖励梯度；性能改善主要来自引导预热，尚未证明模型阶段优于预热基线。
+
+### 实际结果与范围
+
+训练后的 actor 独立运行。MuJoCo 固定种子 1–5，各 20 秒，统计全部控制步，包含起步和命令切换：
+
+| 策略 | 前进 RMSE (m/s) | 横向 RMSE (m/s) | 转向 RMSE (rad/s) | 摔倒 |
+|---|---:|---:|---:|---:|
+| 旧 600 轮检查 | 0.5502 | 0.0293 | 0.2785 | 0 |
+| PPO 引导策略 | 0.0685 | 0.0272 | 0.0450 | 0 |
+| 引导预热后、尚无模型策略更新 | 0.0810 | 0.0260 | 0.0450 | 0 |
+| 最终 900 轮独立 actor | 0.0819 | 0.0259 | 0.0475 | 0 |
+
+冻结早停选择后，新种子 201–210 共 200 秒独立测试，前进/横向/转向 RMSE 为
+0.0783 m/s、0.0248 m/s、0.0512 rad/s，零摔倒。
+训练后端 Genesis 单环境种子 1 的 20 秒独立检查同样通过；前进/转向 RMSE 为 0.0558 m/s 和 0.0157 rad/s。
+验收标准在比较前固定为零摔倒，以及三个聚合 RMSE 各小于 0.15（对应 SI 单位）；脚本保存逐种子结果，失败时 `--require-tracking` 返回非零。
+
+范围是平地前进命令 0.2–0.8 m/s、转向命令 ±0.5 rad/s，每 4 秒重采样；横向命令固定为 0。
+横向 RMSE 衡量漂移，不代表已验证侧向行走。尚未验证复杂地形、外力扰动或真机部署。
+
+本机最终目录是 `runs/supermimic-flat-guided-003/`（Git 忽略）：`policy.pt` 可独立推理，
+`model_900.pt` 保存训练状态，`verification.json` 汇总检查，`tracking-validation.json` 和 `tracking-heldout.json` 保存评估，
+`mujoco-tracking.mp4` 是带目标/实际速度的 12 秒回放，`video-trace.json` 保存对应数据。
+本机 driver 位于 `/Users/shiinarikka/PycharmProjects/RL-Go2/runs/icc-flat-ppo-checkpoint-700/policy.pt`，其 SHA-256 保存在验证报告中。
+完整复跑的 actor 与世界模型和冻结选择时的 900 轮 checkpoint 逐张量一致。
+23 项测试全部通过，包含 Genesis 集成测试、梯度冻结、因果性、driver 不进入导出策略、预热学习率恢复，以及原 PPO/SDK 回归。
+
+### 开发接口与后续地形
+
+Actor 保持 45 维策略观测和 12 维有界动作，沿用现有 PD、关节顺序和真实奖励。
+世界模型看到去除水平位置和 heading 的局部 Markov 状态与当前动作，保留预测世界位姿用于地形查询；
+同时监督预测最后一个物理子步的力矩，用于原有力矩奖励，未替换成控制步末 PD 估计。
+Replay 保存实际执行的裁剪动作、previous_action、上下文、reward、driver 来源和重置前 next_state。
+终止/超时当步的模型目标保留，只屏蔽窗口中 reset 后的后续步骤。
+
+支持模型训练的任务额外提供以下纯批量接口：
+
+- `observe(state, previous_action, context)`、`reward(..., context)`：显式读取采样上下文，复用真实任务公式。
+- `model_features(state, context) -> [batch, F]`：物理参数、局部高度扫描等；平地返回空特征，宽度在初始化时推导。
+- `advance_context(context, next_state)`：推进命令/阶段，可根据预测世界位姿准备扫描；不得修改真实任务状态。
+- `termination_probability(...)`：模型内可微终止概率，真实环境仍使用硬阈值。
+- 可选 `metrics(state, context)`：每个值首维为 batch 的物理指标字典；训练日志只聚合 actor 环境，driver 回报单独记录。
+
+Context 为固定键集合的小型张量字典，replay 自动保存；地形图由任务持有，context 仅记录地图索引等数据。
+模型内逐步从预测位姿重算物理特征；当前拟合阶段使用 replay 的逐步特征，新增地形时必须验证二者分布的一致性。
+新任务仍需实现地形资产、相对地面的高度奖励/终止、接触几何、重置和课程，不能只增加网络输入维数。
+若引入执行延迟，需把真正的执行器状态加入动力学状态，不能用无约束 previous_action 快捷输入代替。
+
+输出目录必须不存在，保存完整配置、策略约定、资产哈希、逐轮 `metrics.jsonl` 和网络/优化器 checkpoint。
+世界模型修正后的 checkpoint schema 为 `rl-go2.supermimic/v2`，与旧输入维度不兼容。
+当前没有恢复训练 CLI，也不保存完整 replay；本节的“引导预热”是监督训练，不是加载另一 actor 的权重。

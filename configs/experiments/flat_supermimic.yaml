@@ -1,0 +1,38 @@
+scene: ../scenes/flat.yaml
+robot: ../robots/go2.yaml
+task: ../tasks/flat_walk.yaml
+backend: genesis
+device: cpu
+num_envs: 4
+seed: 1
+curriculum:
+  name: none
+trainer:
+  name: supermimic
+  iterations: 10000
+  collect_steps: 4
+  buffer_steps: 256
+  warmup_iterations: 200
+  model_hidden: [512, 512, 512]
+  actor_hidden: [256, 128, 64]
+  critic_hidden: [256, 128]
+  model_window: 8
+  model_batch: 256
+  model_updates: 4
+  imagination_batch: 256
+  horizon: 32
+  critic_epochs: 5
+  critic_minibatches: 4
+  learning_rate: 0.0002
+  actor_learning_rate: 0.0002
+  # Critic-only imagination gave misleading policy gradients in the flat task.
+  # Start with the paper's unbootstrapped ablation; validate real tracking before enabling.
+  bootstrap_weight: 0.0
+  driver_fraction: 0.5
+  gamma: 0.99
+  gae_lambda: 0.95
+  action_noise: 0.1
+  height_softness: 0.01
+  upright_softness: 0.03
+  save_interval: 100
+  log_interval: 10

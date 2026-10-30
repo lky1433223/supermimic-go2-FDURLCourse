@@ -158,9 +158,6 @@ class FrameworkTests(unittest.TestCase):
         config["curriculum"] = {"name": "adaptive"}
         with self.assertRaises(NotImplementedError):
             QuadrupedEnv(config, backend=FakeBackend(config))
-        from rl_go2.trainers.supermimic import train
-        with self.assertRaises(NotImplementedError):
-            train(config, "/unused")
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "bad.yaml"
             path.write_text("schema: rl-go2.scene/v1\nscene:\n  sim_options: {dt: 0.005, gravity: [0,0,-9.81]}\n  entities:\n    - {id: unsupported, type: mesh}\n")

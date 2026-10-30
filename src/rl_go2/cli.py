@@ -17,7 +17,8 @@ def main():
     parser.add_argument("--output", type=Path)
     parser.add_argument("--run-dir", type=Path)
     parser.add_argument("--viewer", action="store_true")
-    parser.add_argument("--check-runner", action="store_true", help="Initialize PPO and sample actions, without learning")
+    parser.add_argument("--driver-policy", type=Path, help="Optional TorchScript data driver for SuperMimic; never deployed")
+    parser.add_argument("--check-runner", action="store_true", help="Initialize the configured trainer and sample actions, without learning")
     args = parser.parse_args()
     if args.command == "evaluate":
         if args.run_dir is None:
@@ -33,6 +34,10 @@ def main():
         config["trainer"]["iterations"] = args.iterations
     if config["num_envs"] < 1 or args.steps < 1 or config["trainer"]["iterations"] < 1:
         parser.error("num-envs, steps and iterations must be positive")
+    if args.driver_policy is not None:
+        if config["trainer"]["name"] != "supermimic":
+            parser.error("--driver-policy requires the SuperMimic trainer")
+        config["trainer"]["driver_policy"] = str(args.driver_policy.resolve())
     if args.command == "validate":
         print(json.dumps(config, indent=2))
         return
@@ -58,9 +63,16 @@ def main():
         if args.command == "evaluate":
             policy = torch.jit.load(str(args.run_dir / "policy.pt"), map_location=env.device).eval()
         elif args.check_runner:
-            from rl_go2.trainers.ppo import make_runner
-            runner = make_runner(env)
-            policy = runner.get_inference_policy(device=str(env.device))
+            if config["trainer"]["name"] == "supermimic":
+                from rl_go2.trainers.supermimic import Actor, TrainConfig
+                cfg = TrainConfig(**config["trainer"])
+                cfg.validate()
+                policy = Actor(env.observe().shape[-1], env.num_actions, cfg.actor_hidden,
+                               config["robot"]["action_clip"]).to(env.device)
+            else:
+                from rl_go2.trainers.ppo import make_runner
+                runner = make_runner(env)
+                policy = runner.get_inference_policy(device=str(env.device))
         returns = torch.zeros(env.num_envs, device=env.device)
         resets = 0
         with torch.inference_mode():

@@ -20,6 +20,8 @@ class Transition:
     context: dict[str, torch.Tensor]
     terminated: torch.Tensor
     truncated: torch.Tensor
+    previous_action: torch.Tensor
+    torque: torch.Tensor
 
 
 class QuadrupedEnv:
@@ -78,12 +80,14 @@ class QuadrupedEnv:
         truncated = (self.episode_length_buf >= self.max_episode_length) & ~terminated
         done = terminated | truncated
         self.episode_return += reward
+        old_action = self.previous_action
         self.previous_action = clipped_action.clone()
         extras = {"time_outs": truncated, "terminated": terminated, "truncated": truncated}
         # Allocate only when needed; buffers returned to the learner never alias future in-place updates.
         if self.record_transitions:
             extras["transition"] = Transition(old_state.clone(), clipped_action.clone(), self.state.clone(),
-                                               context, terminated.clone(), truncated.clone())
+                                               context, terminated.clone(), truncated.clone(),
+                                               old_action.clone(), torque.detach().clone())
         done_ids = done.nonzero(as_tuple=False).flatten()
         if done_ids.numel():
             extras["final_env_ids"] = done_ids

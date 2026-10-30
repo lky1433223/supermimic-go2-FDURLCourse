@@ -33,16 +33,20 @@ class FlatWalkTask:
         self.generator = torch.Generator().manual_seed(seed)
         self.ranges = torch.tensor(config["command_ranges"], device=device).expand(num_envs, -1, -1).clone()
         self.resample_steps = max(1, round(config["command_resample_seconds"] / dt))
+        self.command_steps_left = torch.full((num_envs, 1), self.resample_steps, device=device, dtype=torch.long)
 
     def reset(self, env_ids, state, updates):
         self.resample(env_ids, updates)
+        self.command_steps_left[env_ids] = self.resample_steps
 
     def on_step_end(self, state, episode_steps):
         ids = ((episode_steps > 0) & (episode_steps % self.resample_steps == 0)).nonzero(as_tuple=False).flatten()
         self.resample(ids)
+        self.command_steps_left[:, 0] = self.resample_steps - episode_steps % self.resample_steps
 
     def context(self):
-        return {"commands": self.commands}
+        return {"commands": self.commands, "command_steps_left": self.command_steps_left,
+                "command_ranges": self.ranges}
 
     def resample(self, env_ids, updates=None):
         updates = updates or {}
@@ -64,17 +68,19 @@ class FlatWalkTask:
                 rotate_inverse(state.quaternion, state.angular_velocity),
                 rotate_inverse(state.quaternion, gravity))
 
-    def observe(self, state, previous_action):
+    def observe(self, state, previous_action, context=None):
+        commands = self.commands if context is None else context["commands"]
         angular = rotate_inverse(state.quaternion, state.angular_velocity)
         return policy_observation(state.quaternion, angular, state.joint_position, state.joint_velocity,
-                                  self.commands, previous_action, self.default, self.config["observation_scales"])
+                                  commands, previous_action, self.default, self.config["observation_scales"])
 
-    def reward(self, state, action, previous_action, torque):
+    def reward(self, state, action, previous_action, torque, context=None):
+        commands = self.commands if context is None else context["commands"]
         linear, angular, gravity = self.body_state(state)
         sigma = self.config["tracking_sigma"]
         terms = {
-            "tracking_linear": torch.exp(-((linear[:, :2] - self.commands[:, :2])**2).sum(-1) / sigma),
-            "tracking_yaw": torch.exp(-(angular[:, 2] - self.commands[:, 2])**2 / sigma),
+            "tracking_linear": torch.exp(-((linear[:, :2] - commands[:, :2])**2).sum(-1) / sigma),
+            "tracking_yaw": torch.exp(-(angular[:, 2] - commands[:, 2])**2 / sigma),
             "vertical_velocity": linear[:, 2]**2,
             "roll_pitch_velocity": (angular[:, :2]**2).sum(-1),
             "orientation": (gravity[:, :2]**2).sum(-1),
@@ -89,3 +95,28 @@ class FlatWalkTask:
         _, _, gravity = self.body_state(state)
         return ((state.position[:, 2] < self.config["termination_min_height"])
                 | (-gravity[:, 2] < self.config["termination_min_upright"]))
+
+    def model_features(self, state, context):
+        """Dynamics-only features; terrain tasks can provide local scans/physics parameters."""
+        return state.position.new_zeros((state.position.shape[0], 0))
+
+    def advance_context(self, context, next_state):
+        """Pure batched goal update for imagination; never mutates the simulator task."""
+        left = context["command_steps_left"] - 1
+        ranges = context["command_ranges"]
+        sample = torch.rand_like(context["commands"])
+        commands = ranges[:, :, 0] + sample * (ranges[:, :, 1] - ranges[:, :, 0])
+        return {**context, "commands": torch.where(left <= 0, commands, context["commands"]),
+                "command_steps_left": torch.where(left <= 0, self.resample_steps, left)}
+
+    def termination_probability(self, state, context, height_softness, upright_softness):
+        _, _, gravity = self.body_state(state)
+        low = torch.sigmoid((self.config["termination_min_height"] - state.position[:, 2]) / height_softness)
+        tilted = torch.sigmoid((self.config["termination_min_upright"] + gravity[:, 2]) / upright_softness)
+        return 1 - (1 - low) * (1 - tilted)
+
+    def metrics(self, state, context):
+        linear, angular, _ = self.body_state(state)
+        error = torch.cat((linear[:, :2], angular[:, 2:3]), -1) - context["commands"]
+        return {name: error[:, i].square() for i, name in enumerate(
+            ("vx_error_squared", "vy_error_squared", "yaw_error_squared"))}

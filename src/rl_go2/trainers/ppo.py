@@ -1,8 +1,6 @@
 from copy import deepcopy
-from importlib.metadata import version
 import json
 from pathlib import Path
-import hashlib
 
 import torch
 from rsl_rl.env import VecEnv
@@ -10,7 +8,7 @@ from rsl_rl.runners import OnPolicyRunner
 from tensordict import TensorDict
 
 from rl_go2.env import QuadrupedEnv
-from rl_go2.tasks import get_task_type
+from rl_go2.trainers import save_run_spec
 
 
 class RslRlEnv(VecEnv):
@@ -41,23 +39,6 @@ class RslRlEnv(VecEnv):
 def make_runner(env, log_dir=None):
     return OnPolicyRunner(RslRlEnv(env), deepcopy(env.config["trainer"]["runner"]),
                           log_dir=str(log_dir) if log_dir is not None else None, device=str(env.device))
-
-
-def save_run_spec(config, output):
-    output = Path(output)
-    output.mkdir(parents=True, exist_ok=False)
-    (output / "config.json").write_text(json.dumps(config, indent=2) + "\n")
-    asset = next(e["file"] for e in config["scene"]["entities"] if e.get("robot"))
-    meshes = sorted((Path(asset).parent / "assets").glob("*"))
-    metadata = {
-        "schema": "rl-go2.policy/v1", "quaternion_order": "wxyz", "world_up": "z", "units": "SI",
-        "task": config["task"]["name"],
-        "observation_terms": get_task_type(config["task"]["name"]).observation_terms, "control": config["robot"],
-        "control_dt": config["scene"]["sim_options"]["dt"] * config["robot"]["control_decimation"],
-        "versions": {name: version(name) for name in ("torch", "genesis-world", "mujoco", "rsl-rl-lib")},
-        "asset_hashes": {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in [Path(asset), *meshes]},
-    }
-    (output / "policy_spec.json").write_text(json.dumps(metadata, indent=2) + "\n")
 
 
 def train(config, output):
