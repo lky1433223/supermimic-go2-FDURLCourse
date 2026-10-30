@@ -8,6 +8,7 @@ from rsl_rl.runners import OnPolicyRunner
 from tensordict import TensorDict
 
 from rl_go2.env import QuadrupedEnv
+from rl_go2.tasks import get_task_type
 from rl_go2.trainers import save_run_spec
 
 
@@ -41,6 +42,26 @@ def make_runner(env, log_dir=None):
                           log_dir=str(log_dir) if log_dir is not None else None, device=str(env.device))
 
 
+def initialize_weights(runner, checkpoint, config):
+    checkpoint = Path(checkpoint)
+    source = checkpoint.parent / 'config.json'
+    if not source.exists():
+        source = checkpoint.parent / 'remote-config.json'
+    original = json.loads(source.read_text())
+    # A same-sized network can still have incompatible joint order or controller semantics.
+    for key in ('joint_names', 'default_joint_positions', 'kp', 'kd', 'torque_limits',
+                'action_scale', 'action_clip', 'control_decimation'):
+        if original['robot'][key] != config['robot'][key]:
+            raise ValueError(f'Checkpoint robot setting differs: {key}')
+    if original['scene']['sim_options']['dt'] != config['scene']['sim_options']['dt']:
+        raise ValueError('Checkpoint physics timestep differs')
+    if get_task_type(original['task']['name']).observation_terms != get_task_type(config['task']['name']).observation_terms:
+        raise ValueError('Checkpoint observation layout differs')
+    runner.load(str(checkpoint), map_location=str(runner.device),
+                load_cfg={'actor': True, 'critic': True, 'optimizer': False, 'iteration': False, 'rnd': False})
+    print(f'Initialized actor/critic from {checkpoint}; optimizer, iteration and curriculum start fresh.', flush=True)
+
+
 def train(config, output):
     if config["backend"] != "genesis":
         raise ValueError("PPO training currently targets Genesis; use MuJoCo for evaluation")
@@ -49,7 +70,10 @@ def train(config, output):
     try:
         save_run_spec(config, output)
         runner = make_runner(env, output)
-        runner.learn(config["trainer"]["iterations"], init_at_random_ep_len=True)
+        if config['trainer'].get('init_checkpoint'):
+            initialize_weights(runner, config['trainer']['init_checkpoint'], config)
+        runner.learn(config["trainer"]["iterations"],
+                     init_at_random_ep_len=config['trainer'].get('randomize_initial_episode_lengths', True))
         runner.export_policy_to_jit(str(output), filename="policy.pt")
         (Path(output) / "curriculum.json").write_text(json.dumps(env.curriculum.state_dict(), indent=2) + "\n")
     finally:

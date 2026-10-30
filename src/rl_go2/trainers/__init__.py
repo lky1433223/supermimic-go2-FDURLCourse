@@ -20,4 +20,7 @@ def save_run_spec(config, output):
         "versions": {name: version(name) for name in ("torch", "genesis-world", "mujoco", "rsl-rl-lib")},
         "asset_hashes": {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in [Path(asset), *meshes]},
     }
+    if config['trainer'].get('init_checkpoint'):
+        checkpoint = Path(config['trainer']['init_checkpoint'])
+        metadata['initial_checkpoint_sha256'] = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
     (output / "policy_spec.json").write_text(json.dumps(metadata, indent=2) + "\n")

@@ -38,6 +38,7 @@ class GenesisBackend:
                 self.scene.add_entity(morph, material=gs.materials.Rigid(friction=entity.get("friction", 0.8)))
         self.scene.build(n_envs=self.num_envs)
         self.joints = [self.robot.get_joint(name).dofs_idx_local[0] for name in config["robot"]["joint_names"]]
+        self.base = self.robot.get_link(config["robot"]["base_link"])
         self.reset(torch.arange(self.num_envs, device=self.device))
 
     def read_state(self):
@@ -59,7 +60,11 @@ class GenesisBackend:
         positions = torch.tensor(self.config["robot"]["default_joint_positions"], device=self.device)
         self.robot.set_dofs_position(positions.expand(len(env_ids), -1), self.joints, envs_idx=env_ids)
 
-    def step(self, torque):
+    def step(self, torque, *, base_force=None):
+        if base_force is not None:
+            if base_force.shape != (self.num_envs, 3) or not torch.isfinite(base_force).all():
+                raise ValueError(f"base_force must have shape ({self.num_envs}, 3) and be finite")
+            self.base.apply_external_wrench(force=base_force, ref=self.gs.link_ref_frame.link_COM, local=False)
         self.robot.control_dofs_force(torque, self.joints)
         self.scene.step()
 

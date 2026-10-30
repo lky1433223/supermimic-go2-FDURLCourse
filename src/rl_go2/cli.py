@@ -16,6 +16,7 @@ def main():
     parser.add_argument("--iterations", type=int)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--run-dir", type=Path)
+    parser.add_argument("--init-checkpoint", type=Path, help="Initialize actor/critic weights; start fresh optimizer and curriculum")
     parser.add_argument("--viewer", action="store_true")
     parser.add_argument("--driver-policy", type=Path, help="Optional TorchScript data driver for SuperMimic; never deployed")
     parser.add_argument("--check-runner", action="store_true", help="Initialize the configured trainer and sample actions, without learning")
@@ -32,6 +33,10 @@ def main():
             config[key] = getattr(args, key)
     if args.iterations is not None:
         config["trainer"]["iterations"] = args.iterations
+    if args.init_checkpoint is not None:
+        if args.command != 'train' or config['trainer']['name'] != 'ppo' or not args.init_checkpoint.is_file():
+            parser.error('--init-checkpoint requires PPO train and an existing checkpoint')
+        config['trainer']['init_checkpoint'] = str(args.init_checkpoint.resolve())
     if config["num_envs"] < 1 or args.steps < 1 or config["trainer"]["iterations"] < 1:
         parser.error("num-envs, steps and iterations must be positive")
     if args.driver_policy is not None:

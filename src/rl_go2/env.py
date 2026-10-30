@@ -61,17 +61,28 @@ class QuadrupedEnv:
     def observe(self):
         return self.task.observe(self.state, self.previous_action)
 
-    def step(self, action):
+    def step(self, action, *, base_force=None):
         action = action.detach().to(self.device)
         if action.shape != self.previous_action.shape or not torch.isfinite(action).all():
             raise ValueError(f"Expected finite actions of shape {tuple(self.previous_action.shape)}")
         old_state = self.state
+        if base_force is None:
+            base_force = self.task.external_force(self.state, self.episode_length_buf)
         context = ({name: value.detach().clone() for name, value in self.task.context().items()}
                    if self.record_transitions else None)
+        if base_force is not None:
+            base_force = base_force.detach().to(self.device)
+            if base_force.shape != (self.num_envs, 3) or not torch.isfinite(base_force).all():
+                raise ValueError(f"base_force must be finite with shape ({self.num_envs}, 3)")
+            if context is not None:
+                context["external_force_world"] = base_force.clone()
         target, clipped_action = self.controller.target(action)
         for _ in range(self.config["robot"]["control_decimation"]):
             torque = self.controller.torque(target, self.state)
-            self.backend.step(torque)
+            if base_force is None:
+                self.backend.step(torque)
+            else:
+                self.backend.step(torque, base_force=base_force)
             self.state = self.backend.read_state()
         self.episode_length_buf += 1
         self.environment_steps += self.num_envs
@@ -80,14 +91,15 @@ class QuadrupedEnv:
         truncated = (self.episode_length_buf >= self.max_episode_length) & ~terminated
         done = terminated | truncated
         self.episode_return += reward
-        old_action = self.previous_action
-        self.previous_action = clipped_action.clone()
+        old_action = self.previous_action.clone() if self.record_transitions else None
+        # Keep a normal persistent buffer so reset also works outside inference_mode.
+        self.previous_action.copy_(clipped_action)
         extras = {"time_outs": truncated, "terminated": terminated, "truncated": truncated}
         # Allocate only when needed; buffers returned to the learner never alias future in-place updates.
         if self.record_transitions:
             extras["transition"] = Transition(old_state.clone(), clipped_action.clone(), self.state.clone(),
                                                context, terminated.clone(), truncated.clone(),
-                                               old_action.clone(), torque.detach().clone())
+                                               old_action, torque.detach().clone())
         done_ids = done.nonzero(as_tuple=False).flatten()
         if done_ids.numel():
             extras["final_env_ids"] = done_ids
@@ -97,6 +109,9 @@ class QuadrupedEnv:
                 "/episode/seconds": (self.episode_length_buf[done_ids].float().mean() * self.dt).item(),
             }
             self.reset(done_ids, extras["log"])
+            curriculum_state = self.curriculum.state_dict()
+            if "stage" in curriculum_state:
+                extras["log"]["/curriculum/stage"] = curriculum_state["stage"]
         self.task.on_step_end(self.state, self.episode_length_buf)
         return self.observe(), reward, done, extras
 

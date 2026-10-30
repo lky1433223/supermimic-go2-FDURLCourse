@@ -82,7 +82,12 @@ class MujocoBackend:
         self.data.qpos[self.q_indices] = self.config["robot"]["default_joint_positions"]
         mujoco.mj_forward(self.model, self.data)
 
-    def step(self, torque):
+    def step(self, torque, *, base_force=None):
+        self.data.xfrc_applied[:] = 0
+        if base_force is not None:
+            if base_force.shape != (1, 3) or not torch.isfinite(base_force).all():
+                raise ValueError("base_force must have shape (1, 3) and be finite")
+            self.data.xfrc_applied[self.base, :3] = base_force[0].detach().cpu().numpy()
         self.data.ctrl[self.motors] = torque[0].detach().cpu().numpy()
         mujoco.mj_step(self.model, self.data)
         # mj_step advances qpos after computing derived kinematics.

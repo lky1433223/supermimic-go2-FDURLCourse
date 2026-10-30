@@ -10,7 +10,8 @@ if TYPE_CHECKING:
     from rl_go2.state import RobotState
 
 
-TASK_TYPES = {"flat_walk": "rl_go2.tasks.flat_walk:FlatWalkTask"}
+TASK_TYPES = {"flat_walk": "rl_go2.tasks.flat_walk:FlatWalkTask",
+              "push_walk": "rl_go2.tasks.push_walk:PushWalkTask"}
 
 
 class Task(Protocol):
@@ -27,6 +28,9 @@ class Task(Protocol):
     def reward(self, state: RobotState, action: torch.Tensor,
                previous_action: torch.Tensor, torque: torch.Tensor) -> torch.Tensor: ...
     def terminated(self, state: RobotState) -> torch.Tensor: ...
+    def external_force(self, state: RobotState, episode_steps: torch.Tensor) -> torch.Tensor | None:
+        """World-frame base COM force held over the next control step; never an actor input."""
+        ...
     def on_step_end(self, state: RobotState, episode_steps: torch.Tensor) -> None:
         """Update task state for the next observation, after automatic resets."""
         ...
