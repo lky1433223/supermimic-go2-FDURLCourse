@@ -8,6 +8,7 @@ import torch
 from rl_go2.config import load_experiment
 from rl_go2.env import QuadrupedEnv
 from rl_go2.trainers.supermimic import train
+from rl_go2.trainers import output_directory
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -15,8 +16,11 @@ ROOT = Path(__file__).resolve().parents[1]
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--backend', choices=('genesis', 'mujoco'), default='genesis')
-    parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--output', type=Path, help='Defaults to output/supermimic-check-<timestamp>')
     args = parser.parse_args()
+    if args.output is None:
+        args.output = output_directory('supermimic-check')
+    print(f'Check output: {args.output.resolve()}', flush=True)
     torch.set_num_threads(2)
     config = load_experiment(ROOT / 'configs/experiments/flat_supermimic.yaml')
     config.update(backend=args.backend, num_envs=4 if args.backend == 'genesis' else 1)

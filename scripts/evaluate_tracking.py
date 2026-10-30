@@ -2,11 +2,13 @@
 import argparse
 from copy import deepcopy
 import json
+import sys
 from pathlib import Path
 
 import torch
 
 from rl_go2.env import QuadrupedEnv
+from rl_go2.trainers import output_directory
 from rl_go2.trainers.supermimic import Actor
 
 
@@ -64,9 +66,11 @@ def main():
     parser.add_argument('--backend', choices=('mujoco', 'genesis'), default='mujoco')
     parser.add_argument('--seeds', type=int, nargs='+', default=[1, 2, 3, 4, 5])
     parser.add_argument('--steps', type=int, default=1000)
-    parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--output', type=Path, help='Defaults to <run-dir>/evaluation/tracking-<timestamp>/assessment.json')
     parser.add_argument('--require-tracking', action='store_true')
     args = parser.parse_args()
+    if args.output is None:
+        args.output = output_directory('tracking', args.run_dir / 'evaluation') / 'assessment.json'
     if args.steps < 2 or not args.seeds:
         parser.error('steps must be >= 2 and seeds must be nonempty')
     if args.policy and args.checkpoint:
@@ -84,6 +88,7 @@ def main():
     report = evaluate(config, policy, args.seeds, args.steps, args.backend)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2) + '\n')
+    print(f'Evaluation output: {args.output.resolve()}', file=sys.stderr, flush=True)
     print(json.dumps({key: value for key, value in report.items() if key != 'per_seed'}, indent=2))
     if args.require_tracking and not report['tracking_passed']:
         raise SystemExit('Speed tracking acceptance failed; see evaluation report')

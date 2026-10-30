@@ -9,6 +9,7 @@ import numpy as np
 import torch
 
 from rl_go2.env import QuadrupedEnv
+from rl_go2.trainers import output_directory
 
 DIRECTIONS = {'x+': [1, 0, 0], 'x-': [-1, 0, 0], 'y+': [0, 1, 0], 'y-': [0, -1, 0]}
 ROOT = Path(__file__).resolve().parents[1]
@@ -63,17 +64,20 @@ def record_frame(env, renderer, camera, force, step, dt, speed, magnitude, write
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--run-dir', type=Path, required=True)
-    parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--output', type=Path, help='Defaults to <run-dir>/evaluation/push-<timestamp>')
     parser.add_argument('--forces', nargs='+', type=float, default=[0, 20, 40, 60, 80, 100])
     parser.add_argument('--speeds', nargs='+', type=float, default=[.3, .5, .7])
     parser.add_argument('--directions', nargs='+', choices=list(DIRECTIONS), default=list(DIRECTIONS))
     parser.add_argument('--video', action='store_true', help='Record the 80N y+ 0.5m/s trial')
     args = parser.parse_args()
+    if args.output is None:
+        args.output = output_directory('push', args.run_dir / 'evaluation')
     if any(not math.isfinite(x) or x < 0 for x in args.forces) or any(not math.isfinite(x) for x in args.speeds):
         parser.error('Forces must be finite and nonnegative; speeds must be finite')
     if args.video and not (80 in args.forces and .5 in args.speeds and 'y+' in args.directions):
         parser.error('--video requires the 80N y+ 0.5m/s condition')
     args.output.mkdir(parents=True, exist_ok=False)
+    print(f'Evaluation output: {args.output.resolve()}', flush=True)
     config = load_config(args.run_dir)
     config['task']['command_ranges'] = [[args.speeds[0], args.speeds[0]], [0, 0], [0, 0]]
     env = QuadrupedEnv(config, record_transitions=True)

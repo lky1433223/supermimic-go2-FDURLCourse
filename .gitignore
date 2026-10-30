@@ -6,5 +6,6 @@ __pycache__/
 .uv-cache/
 logs/
 runs/
+/output/
 checkpoints/
 .deps/

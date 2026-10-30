@@ -2,8 +2,16 @@ from importlib.metadata import version
 import json
 from pathlib import Path
 import hashlib
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from rl_go2.tasks import get_task_type
+
+
+def output_directory(name, parent=Path('output')):
+    """Return a per-run output path; timestamps use the project's Asia/Shanghai timezone."""
+    timestamp = datetime.now(ZoneInfo('Asia/Shanghai')).strftime('%Y%m%d-%H%M%S-%f')
+    return Path(parent) / f'{name}-{timestamp}'
 
 
 def save_run_spec(config, output):

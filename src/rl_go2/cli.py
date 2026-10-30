@@ -1,8 +1,10 @@
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from rl_go2.config import load_experiment
+from rl_go2.trainers import output_directory
 
 
 def main():
@@ -14,7 +16,7 @@ def main():
     parser.add_argument("--num-envs", type=int)
     parser.add_argument("--steps", type=int, default=16)
     parser.add_argument("--iterations", type=int)
-    parser.add_argument("--output", type=Path)
+    parser.add_argument("--output", type=Path, help="Output directory; training defaults to output/<experiment>-seed<seed>-<timestamp>")
     parser.add_argument("--run-dir", type=Path)
     parser.add_argument("--init-checkpoint", type=Path, help="Initialize actor/critic weights; start fresh optimizer and curriculum")
     parser.add_argument("--viewer", action="store_true")
@@ -48,7 +50,8 @@ def main():
         return
     if args.command == "train":
         if args.output is None:
-            parser.error("train requires a new --output directory")
+            args.output = output_directory(f'{Path(args.config).stem}-seed{config["seed"]}')
+        print(f'Training output: {args.output.resolve()}', flush=True)
         name = config["trainer"]["name"]
         if name == "supermimic":
             from rl_go2.trainers.supermimic import train
@@ -93,10 +96,16 @@ def main():
                     raise RuntimeError("Non-finite simulation output")
                 returns += reward
                 resets += int(done.sum())
-        print(json.dumps({"backend": config["backend"], "device": str(env.device), "num_envs": env.num_envs,
+        report = {"backend": config["backend"], "device": str(env.device), "num_envs": env.num_envs,
                           "steps": args.steps, "observation_shape": list(observation.shape),
                           "mean_total_reward": returns.mean().item(), "episode_resets": resets,
-                          "policy_updates": 0}, indent=2))
+                          "policy_updates": 0}
+        if args.command == 'evaluate':
+            destination = args.output or output_directory(f'rollout-{config["backend"]}', args.run_dir / 'evaluation')
+            destination.mkdir(parents=True, exist_ok=False)
+            (destination / 'assessment.json').write_text(json.dumps(report, indent=2) + '\n')
+            print(f'Evaluation output: {destination.resolve()}', file=sys.stderr, flush=True)
+        print(json.dumps(report, indent=2))
     finally:
         env.close()
 
