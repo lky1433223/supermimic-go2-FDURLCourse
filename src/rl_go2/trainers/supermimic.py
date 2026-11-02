@@ -155,6 +155,7 @@ def imagined_rollout(env, model, actor, critic, seed, cfg):
         features = env.task.model_features(robot, context)
         inputs.append(critic_input(state, previous_action, context, features))
         action = actor(env.task.observe(robot, previous_action, context))
+        _, action = env.controller.target(action)
         next_state, torque = model(state, action, previous_action, features)
         next_robot = unpack(next_state)
         torque = torque.clamp(-env.controller.limits, env.controller.limits)
@@ -274,8 +275,9 @@ class Trainer:
             raise ValueError('Behavior guidance requires a data driver')
         observation = self.env.task.observe(unpack(seed['state']), seed['previous_action'], context_from(seed))
         with torch.no_grad():
-            target = self.driver(observation).clamp(-self.actor.action_clip, self.actor.action_clip)
-        return (self.actor(observation) - target).square().mean()
+            _, target = self.env.controller.target(self.driver(observation))
+        _, action = self.env.controller.target(self.actor(observation))
+        return (action - target).square().mean()
 
     def warmup_actor(self):
         losses = []

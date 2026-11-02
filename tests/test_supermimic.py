@@ -111,6 +111,30 @@ class SuperMimicTests(unittest.TestCase):
             optimizer.zero_grad(); loss.backward(); optimizer.step()
         self.assertLess(model.loss(w).item(), initial * .5)
 
+    def test_imagination_and_replay_use_applied_joint_limited_actions(self):
+        self.cfg.action_noise = 0
+        trainer = self.make_trainer()
+        class ExtremeActor(torch.nn.Module):
+            def forward(self, observation):
+                return observation.new_full((observation.shape[0], 12), 5.)
+        trainer.actor.forward = ExtremeActor().forward
+        trainer.collect()
+        expected = trainer.env.controller.action_upper
+        torch.testing.assert_close(trainer.replay.data['action'][:4], expected.expand(4, 2, -1))
+        seed = trainer.replay.sample_starts(8)
+        seen = []
+        def check_model_action(module, args):
+            torch.testing.assert_close(args[1], expected.expand(8, -1))
+            if seen:
+                torch.testing.assert_close(args[2], expected.expand(8, -1))
+            seen.append(True)
+        handle = trainer.model.register_forward_pre_hook(check_model_action)
+        try:
+            imagined_rollout(trainer.env, trainer.model, ExtremeActor(), trainer.critic, seed, self.cfg)
+            self.assertEqual(len(seen), self.cfg.horizon)
+        finally:
+            handle.remove()
+
     def test_actor_gradient_frozen_model_critic_and_export(self):
         self.cfg.bootstrap_weight = 1.0
         trainer = self.make_trainer()

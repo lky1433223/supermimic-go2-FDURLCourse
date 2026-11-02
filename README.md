@@ -1,6 +1,6 @@
 # RL-Go2
 
-强化学习机械狗作业：Genesis 训练，MuJoCo 做 sim2sim 验证。PPO 已有平地验证；SuperMimic 式引导训练已通过前进/转向跟踪验收，纯从零模型训练和复杂地形仍未验证成功。
+强化学习机械狗作业：Genesis 训练，MuJoCo 做 sim2sim 验证。PPO 已有平地验证；SuperMimic 式引导训练及从零 bootstrap 配方已通过前进/转向跟踪验收，步态质量和复杂地形仍待验证。
 
 ## 输出目录约定
 
@@ -252,7 +252,8 @@ uv run --extra train --extra unitree python -m unittest discover -s tests -v
 
 已跑通的方案是 **PPO 引导预热 + 行为约束下的可微世界模型优化**。actor 随机初始化，不复制 PPO 网络权重；
 训练时用已有 PPO 策略采集一部分走路数据并提供监督动作，部署时只运行独立 actor。
-纯从零的模型训练对照仍未达到跟踪验收，不能把这里的结果称为无专家先验的原论文复现，也没有证据优于 PPO 或单独监督预热。
+新增的从零 GPU 配方 `flat_supermimic_bootstrap.yaml` 也已通过下面记录的速度跟踪验收；
+它是本项目的 SuperMimic 式实现，尚无证据优于 PPO，也不能据速度指标认定步态已经正常。
 
 算法参考 [SuperMimic](https://arxiv.org/abs/2610.28480) 和
 [Zhengtianjin/go2-supermimic](https://github.com/Zhengtianjin/go2-supermimic)，相关 MIT 许可见
@@ -284,8 +285,26 @@ GPU 可覆盖 `--device cuda --num-envs ...`，但不同规模尚未重新调优
 
 `flat_supermimic.yaml` 保留无监督预热的研究对照，默认不使用 driver，不是已证明能学会步态的推荐配方。
 两种配置默认 `bootstrap_weight: 0`，采用短期奖励和 soft survival 的消融目标。
-设为 1 可启用末端 critic 和 imagined TD(lambda) 拟合，但该分支尚未验证稳定跟踪，不能用于声明训练成功。
+设为 1 可启用末端 critic 和 imagined TD(lambda) 拟合；新增 GPU 配方使用该设置。
 `check_supermimic.py` 显式启用 critic，30 轮只验证更新、导出和仿真链路，不用于速度性能验收。
+
+### 从零 GPU 配方：关节限位与 critic bootstrap
+
+`flat_supermimic_bootstrap.yaml` 使用 4096 环境、40000 轮、300 轮世界模型预热，
+不加载教师或旧权重。关节目标角按 `go2.yaml` 的物理范围向内留出 0.05 rad，
+真实仿真、replay 和 imagined rollout 均使用裁剪后的动作；历史配置没有限位字段时保留原行为。
+
+```bash
+CUDA_VISIBLE_DEVICES=1 uv run --extra train rl-go2 train \
+  --config configs/experiments/flat_supermimic_bootstrap.yaml --output output/flat-supermimic-bootstrap-001
+uv run --extra train python scripts/evaluate_tracking.py --run-dir output/flat-supermimic-bootstrap-001 \
+  --steps 3000 --seeds 1 2 3 4 5 \
+  --output output/flat-supermimic-bootstrap-001/evaluation/tracking-mujoco.json --require-tracking
+```
+
+2026-11-02 ICC GPU 1 的一次完整训练，在 MuJoCo 5 个种子共 300 秒测试中零摔倒，
+vx/vy/yaw RMSE 分别为 0.0586 m/s、0.0179 m/s、0.0404 rad/s。
+该结果来自单次训练，不包含步态质量验收；模型、日志和视频均保留在被 Git 忽略的 `output/` 内。
 
 ### 为什么旧训练没有改善
 

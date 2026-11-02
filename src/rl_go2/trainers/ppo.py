@@ -50,8 +50,9 @@ def initialize_weights(runner, checkpoint, config):
     original = json.loads(source.read_text())
     # A same-sized network can still have incompatible joint order or controller semantics.
     for key in ('joint_names', 'default_joint_positions', 'kp', 'kd', 'torque_limits',
-                'action_scale', 'action_clip', 'control_decimation'):
-        if original['robot'][key] != config['robot'][key]:
+                'action_scale', 'action_clip', 'control_decimation',
+                'joint_position_limits', 'joint_limit_margin'):
+        if original['robot'].get(key) != config['robot'].get(key):
             raise ValueError(f'Checkpoint robot setting differs: {key}')
     if original['scene']['sim_options']['dt'] != config['scene']['sim_options']['dt']:
         raise ValueError('Checkpoint physics timestep differs')

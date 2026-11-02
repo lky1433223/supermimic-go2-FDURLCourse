@@ -19,4 +19,19 @@ kd: 0.5
 torque_limits: [23.7, 23.7, 45.43, 23.7, 23.7, 45.43, 23.7, 23.7, 45.43, 23.7, 23.7, 45.43]
 action_scale: 0.25
 action_clip: 5.0
+# Physical ranges from go2.xml, keyed by name to preserve reordered joint layouts.
+joint_position_limits:
+  FR_hip_joint: [-1.0472, 1.0472]
+  FR_thigh_joint: [-1.5708, 3.4907]
+  FR_calf_joint: [-2.7227, -0.83776]
+  FL_hip_joint: [-1.0472, 1.0472]
+  FL_thigh_joint: [-1.5708, 3.4907]
+  FL_calf_joint: [-2.7227, -0.83776]
+  RR_hip_joint: [-1.0472, 1.0472]
+  RR_thigh_joint: [-0.5236, 4.5379]
+  RR_calf_joint: [-2.7227, -0.83776]
+  RL_hip_joint: [-1.0472, 1.0472]
+  RL_thigh_joint: [-0.5236, 4.5379]
+  RL_calf_joint: [-2.7227, -0.83776]
+joint_limit_margin: 0.05
 control_decimation: 4

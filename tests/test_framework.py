@@ -253,6 +253,35 @@ class FrameworkTests(unittest.TestCase):
             with self.assertRaises(NotImplementedError):
                 load_scene(path)
 
+    def test_joint_target_limits_and_legacy_config(self):
+        config = deepcopy(self.config)
+        config.update(backend="mujoco", device="cpu", num_envs=1)
+        env = QuadrupedEnv(config)
+        try:
+            controller = env.controller
+            for sign in (-1, 1):
+                target, applied = controller.target(torch.full((1, 12), sign * 100.))
+                torch.testing.assert_close(target, controller.default + config['robot']['action_scale'] * applied)
+                for i, name in enumerate(config['robot']['joint_names']):
+                    physical = env.backend.model.jnt_range[env.backend.model.joint(name).id]
+                    self.assertEqual(list(physical), config['robot']['joint_position_limits'][name])
+                    self.assertGreaterEqual(float(target[0, i]), physical[0] + .05 - 1e-6)
+                    self.assertLessEqual(float(target[0, i]), physical[1] - .05 + 1e-6)
+            action = torch.zeros(1, 12, requires_grad=True)
+            controller.target(action)[0].sum().backward()
+            torch.testing.assert_close(action.grad, torch.full_like(action, .25))
+            legacy = deepcopy(config['robot'])
+            legacy.pop('joint_position_limits')
+            legacy.pop('joint_limit_margin')
+            _, applied = JointPositionControl(legacy, 'cpu').target(torch.full((1, 12), 100.))
+            torch.testing.assert_close(applied, torch.full((1, 12), 5.))
+            bad = deepcopy(config['robot'])
+            bad['joint_position_limits']['FR_calf_joint'] = [0., 1.]
+            with self.assertRaisesRegex(ValueError, 'Default joint positions'):
+                JointPositionControl(bad, 'cpu')
+        finally:
+            env.close()
+
     def test_mujoco_joint_mapping_and_ppo_export(self):
         from rl_go2.trainers.ppo import make_runner, save_run_spec
         config = deepcopy(self.config)
