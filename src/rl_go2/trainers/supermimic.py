@@ -44,6 +44,7 @@ class TrainConfig:
     compile_training: bool = False
     compile_policy_losses: bool = False
     cuda_graph_model: bool = False
+    cuda_graph_policy: bool = False
     bootstrap_weight: float = 0.0
     driver_policy: str | None = None
     driver_fraction: float = 0.5
@@ -71,6 +72,8 @@ class TrainConfig:
             raise ValueError('compile_policy_losses must be a boolean')
         if type(self.cuda_graph_model) is not bool:
             raise ValueError('cuda_graph_model must be a boolean')
+        if type(self.cuda_graph_policy) is not bool:
+            raise ValueError('cuda_graph_policy must be a boolean')
         integer_fields = ('iterations', 'collect_steps', 'buffer_steps', 'model_window', 'model_batch',
                           'model_updates', 'imagination_batch', 'horizon', 'critic_epochs',
                           'critic_minibatches', 'save_interval', 'log_interval')
@@ -147,7 +150,7 @@ def frozen(*modules):
             p.requires_grad_(flag)
 
 
-def optimize(loss, optimizer, parameters, norm, value=None, *, backward=True):
+def optimize(loss, optimizer, parameters, norm, value=None, *, backward=True, step=None):
     parameters = list(parameters)
     if not torch.isfinite(loss):
         raise RuntimeError('Non-finite SuperMimic loss')
@@ -157,7 +160,7 @@ def optimize(loss, optimizer, parameters, norm, value=None, *, backward=True):
     grad = nn.utils.clip_grad_norm_(parameters, norm, error_if_nonfinite=True)
     if value is not None:
         nn.utils.clip_grad_value_(parameters, value)
-    optimizer.step()
+    (optimizer.step if step is None else step)()
     return float(grad)
 
 
@@ -196,8 +199,8 @@ def imagined_return(rewards, continuations, gamma):
     return objective, survival
 
 
-def critic_minibatch_loss(critic, inputs, targets, ids):
-    return (critic(inputs[ids]) - targets[ids]).square().mean()
+def critic_minibatch_loss(critic, inputs, targets):
+    return (critic(inputs) - targets).square().mean()
 
 
 def imagined_rollout(env, model, actor, critic, seed, cfg, *, step=None, returns=imagined_return):
@@ -239,22 +242,24 @@ def lambda_returns(critic, data, gamma, lam):
     return torch.stack(list(reversed(targets)), 1)
 
 
-class GraphedModelBackward:
+class GraphedBackward:
     def __init__(self, loss_fn, optimizer, window, device):
         self.window = {key: value.clone() for key, value in window.items()}
         self.stream = torch.cuda.Stream(device=device)
         self.graph = torch.cuda.CUDAGraph()
+        self.optimizer = optimizer
+        self.step_graph = None
         caller = torch.cuda.current_stream(device)
         self.stream.wait_stream(caller)
         # Keep AccumulateGrad on the same stream during warmup and capture.
-        with torch.cuda.stream(self.stream):
+        with torch.random.fork_rng(devices=[device]), torch.cuda.stream(self.stream):
             for _ in range(3):
                 optimizer.zero_grad(set_to_none=True)
-                loss_fn(self.window).backward()
+                loss_fn(self.window)[0].backward()
             # Allocate gradients inside the graph so replay overwrites them.
             optimizer.zero_grad(set_to_none=True)
             with torch.cuda.graph(self.graph, stream=self.stream):
-                loss = loss_fn(self.window)
+                loss, self.outputs = loss_fn(self.window)
                 loss.backward()
                 self.loss = loss.detach()
         caller.wait_stream(self.stream)
@@ -267,7 +272,22 @@ class GraphedModelBackward:
                 self.window[key].copy_(value)
             self.graph.replay()
         caller.wait_stream(self.stream)
-        return self.loss
+        return self.loss, self.outputs
+
+    def step(self):
+        if not self.optimizer.state:
+            # Initialize Adam state once on a real, validated minibatch.
+            self.optimizer.step()
+            return
+        caller = torch.cuda.current_stream(self.stream.device)
+        self.stream.wait_stream(caller)
+        with torch.cuda.stream(self.stream):
+            if self.step_graph is None:
+                self.step_graph = torch.cuda.CUDAGraph()
+                with torch.cuda.graph(self.step_graph, stream=self.stream):
+                    self.optimizer.step()
+            self.step_graph.replay()
+        caller.wait_stream(self.stream)
 
 
 class Trainer:
@@ -287,6 +307,9 @@ class Trainer:
         self.critic = Critic(ci.shape[-1], cfg.critic_hidden).to(env.device)
         self.model_loss = self.model.loss
         self.graphed_model_backward = None
+        self.graphed_actor_backward = None
+        self.graphed_critic_backward = None
+        self.graph_policy = cfg.cuda_graph_policy and env.device.type == 'cuda'
         self.imagined_step = partial(imagined_step, env, self.model, self.actor, cfg)
         if cfg.compile_training and env.device.type == 'cuda':
             self.model_loss = torch.compile(self.model_loss, fullgraph=True)
@@ -298,9 +321,10 @@ class Trainer:
             self.critic_loss = torch.compile(self.critic_loss, fullgraph=True)
         fused = True if cfg.fused_adam and env.device.type == 'cuda' else None
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=cfg.actor_learning_rate,
-                                                betas=(0.9, 0.95), fused=fused)
+                                                betas=(0.9, 0.95), fused=fused, capturable=self.graph_policy)
         self.model_optimizer = torch.optim.Adam(self.model.parameters(), lr=cfg.learning_rate, fused=fused)
-        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=cfg.learning_rate, fused=fused)
+        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=cfg.learning_rate,
+                                                 fused=fused, capturable=self.graph_policy)
         self.replay = ReplayBuffer(cfg.buffer_steps, env.num_envs, env.device)
         self.driver = None
         self.driver_mask = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
@@ -365,9 +389,9 @@ class Trainer:
             if use_graph:
                 if self.graphed_model_backward is None:
                     with torch.cuda.device(self.env.device):
-                        self.graphed_model_backward = GraphedModelBackward(
-                            self.model_loss, self.model_optimizer, window, self.env.device)
-                loss = self.graphed_model_backward(window)
+                        self.graphed_model_backward = GraphedBackward(
+                            lambda batch: (self.model_loss(batch), ()), self.model_optimizer, window, self.env.device)
+                loss, _ = self.graphed_model_backward(window)
             else:
                 loss = self.model_loss(window)
             optimize(loss, self.model_optimizer, self.model.parameters(), self.cfg.grad_norm, backward=not use_graph)
@@ -397,17 +421,31 @@ class Trainer:
                 group['lr'] = self.cfg.actor_learning_rate
         return sum(losses) / len(losses)
 
+    def actor_loss(self, seed):
+        cfg = self.cfg
+        objective, data, survival = imagined_rollout(
+            self.env, self.model, self.actor, self.critic, seed, cfg,
+            step=self.imagined_step, returns=self.imagined_return)
+        behavior = self.behavior_loss(seed) if cfg.behavior_weight else objective.new_zeros(())
+        return -objective + cfg.behavior_weight * behavior, (objective.detach(), data, survival, behavior.detach())
+
     def improve_policy(self):
         cfg = self.cfg
         start = perf_counter()
         seed = self.replay.sample_starts(cfg.imagination_batch)
         with frozen(self.model, self.critic):
-            objective, data, survival = imagined_rollout(
-                self.env, self.model, self.actor, self.critic, seed, cfg,
-                step=self.imagined_step, returns=self.imagined_return)
-            behavior = self.behavior_loss(seed) if cfg.behavior_weight else objective.new_zeros(())
-            grad = optimize(-objective + cfg.behavior_weight * behavior, self.actor_optimizer,
-                            self.actor.parameters(), cfg.grad_norm, cfg.actor_grad_value)
+            if self.graph_policy:
+                if self.graphed_actor_backward is None:
+                    with torch.cuda.device(self.env.device):
+                        self.graphed_actor_backward = GraphedBackward(
+                            self.actor_loss, self.actor_optimizer, seed, self.env.device)
+                loss, outputs = self.graphed_actor_backward(seed)
+            else:
+                loss, outputs = self.actor_loss(seed)
+            objective, data, survival, behavior = outputs
+            grad = optimize(loss, self.actor_optimizer, self.actor.parameters(), cfg.grad_norm,
+                            cfg.actor_grad_value, backward=not self.graph_policy,
+                            step=self.graphed_actor_backward.step if self.graph_policy else None)
         stats = {'imagined_return': objective.item(), 'imagined_survival': survival.item(),
                  'actor_grad_norm': grad, 'behavior_loss': behavior.item(), 'critic_loss': 0.0}
         critic_start = perf_counter()
@@ -419,12 +457,23 @@ class Trainer:
         x = data['inputs'][:, :-1].reshape(-1, data['inputs'].shape[-1])
         losses = []
         ids = None
+        graph_critic = self.graph_policy and x.shape[0] % cfg.critic_minibatches == 0
         for _ in range(cfg.critic_epochs):
             if ids is None or cfg.official_replay_ratio is None:
                 ids = torch.randperm(x.shape[0], device=x.device).tensor_split(cfg.critic_minibatches)
             for minibatch in ids:
-                loss = self.critic_loss(x, targets, minibatch)
-                optimize(loss, self.critic_optimizer, self.critic.parameters(), cfg.grad_norm)
+                batch = {'inputs': x[minibatch], 'targets': targets[minibatch]}
+                if graph_critic:
+                    if self.graphed_critic_backward is None:
+                        with torch.cuda.device(self.env.device):
+                            self.graphed_critic_backward = GraphedBackward(
+                                lambda data: (self.critic_loss(**data), ()),
+                                self.critic_optimizer, batch, self.env.device)
+                    loss, _ = self.graphed_critic_backward(batch)
+                else:
+                    loss = self.critic_loss(**batch)
+                optimize(loss, self.critic_optimizer, self.critic.parameters(), cfg.grad_norm,
+                         backward=not graph_critic, step=self.graphed_critic_backward.step if graph_critic else None)
                 losses.append(loss.item())
         stats['critic_loss'] = sum(losses) / len(losses)
         stats['critic_seconds'] = perf_counter() - critic_start
