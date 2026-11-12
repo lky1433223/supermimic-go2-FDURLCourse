@@ -32,6 +32,10 @@ class SuperMimicTests(unittest.TestCase):
         env = QuadrupedEnv(self.config, backend=FakeBackend(self.config), record_transitions=True)
         return Trainer(env, self.cfg)
 
+    def test_cuda_acceleration_defaults(self):
+        config = TrainConfig()
+        self.assertTrue(all((config.tf32, config.fused_adam, config.compile_training, config.cuda_graph)))
+
     def test_replay_wrap_and_terminal_transition(self):
         b = ReplayBuffer(4, 2, 'cpu')
         for t in range(7):
@@ -61,9 +65,8 @@ class SuperMimicTests(unittest.TestCase):
     def test_official_schedule_counts_collection_and_reuses_critic_shuffle(self):
         self.cfg.collect_steps = 1
         self.cfg.model_window = 8
-        self.cfg.model_batch = 2
+        self.cfg.model_batch = 1
         self.cfg.model_updates = 10
-        self.cfg.official_replay_ratio = 32  # Two fake environments give the same 0.4 update frequency.
         self.cfg.warmup_iterations = 0
         self.cfg.iterations = 11
         self.cfg.critic_epochs = 2

@@ -17,6 +17,8 @@ from torch import nn
 from rl_go2.env import QuadrupedEnv
 from rl_go2.trainers.model_learning import DynamicsModel, ReplayBuffer, RunningNorm, heading, local_state, mlp, pack, unpack
 
+OFFICIAL_REPLAY_RATIO = 16
+
 
 @dataclass
 class TrainConfig:
@@ -31,20 +33,16 @@ class TrainConfig:
     model_window: int = 8
     model_batch: int = 256
     model_updates: int = 4
-    # Enables the official replay schedule, complete frame windows and critic shuffling.
-    official_replay_ratio: int | None = None
     imagination_batch: int = 256
     horizon: int = 32
     critic_epochs: int = 5
     critic_minibatches: int = 4
     learning_rate: float = 0.0002
     actor_learning_rate: float = 0.0002
-    tf32: bool = False
-    fused_adam: bool = False
-    compile_training: bool = False
-    compile_policy_losses: bool = False
-    cuda_graph_model: bool = False
-    cuda_graph_policy: bool = False
+    tf32: bool = True
+    fused_adam: bool = True
+    compile_training: bool = True
+    cuda_graph: bool = True
     bootstrap_weight: float = 0.0
     driver_policy: str | None = None
     driver_fraction: float = 0.5
@@ -61,19 +59,14 @@ class TrainConfig:
     save_interval: int = 100
     log_interval: int = 10
 
+    @property
+    def uses_official_schedule(self):
+        return self.warmup_iterations == 0
+
     def validate(self):
-        if type(self.tf32) is not bool:
-            raise ValueError('tf32 must be a boolean')
-        if type(self.fused_adam) is not bool:
-            raise ValueError('fused_adam must be a boolean')
-        if type(self.compile_training) is not bool:
-            raise ValueError('compile_training must be a boolean')
-        if type(self.compile_policy_losses) is not bool:
-            raise ValueError('compile_policy_losses must be a boolean')
-        if type(self.cuda_graph_model) is not bool:
-            raise ValueError('cuda_graph_model must be a boolean')
-        if type(self.cuda_graph_policy) is not bool:
-            raise ValueError('cuda_graph_policy must be a boolean')
+        for key in ('tf32', 'fused_adam', 'compile_training', 'cuda_graph'):
+            if type(getattr(self, key)) is not bool:
+                raise ValueError(f'{key} must be a boolean')
         integer_fields = ('iterations', 'collect_steps', 'buffer_steps', 'model_window', 'model_batch',
                           'model_updates', 'imagination_batch', 'horizon', 'critic_epochs',
                           'critic_minibatches', 'save_interval', 'log_interval')
@@ -91,11 +84,8 @@ class TrainConfig:
             raise ValueError('warmup_iterations must be a nonnegative integer')
         if self.buffer_steps < self.model_window:
             raise ValueError('buffer_steps must be >= model_window')
-        if self.official_replay_ratio is not None:
-            if type(self.official_replay_ratio) is not int or self.official_replay_ratio < 1:
-                raise ValueError('official_replay_ratio must be a positive integer')
-            if self.model_window < 2 or self.warmup_iterations or self.behavior_updates:
-                raise ValueError('Official replay requires at least two frames and no separate warmup')
+        if self.uses_official_schedule and self.model_window < 2:
+            raise ValueError('Official replay requires at least two frames')
         for key in ('model_hidden', 'actor_hidden', 'critic_hidden'):
             if not getattr(self, key) or any(type(x) is not int or x < 1 for x in getattr(self, key)):
                 raise ValueError(f'{key} must contain positive integer widths')
@@ -309,22 +299,21 @@ class Trainer:
         self.graphed_model_backward = None
         self.graphed_actor_backward = None
         self.graphed_critic_backward = None
-        self.graph_policy = cfg.cuda_graph_policy and env.device.type == 'cuda'
+        self.use_cuda_graph = cfg.cuda_graph and env.device.type == 'cuda'
         self.imagined_step = partial(imagined_step, env, self.model, self.actor, cfg)
+        self.imagined_return = imagined_return
+        self.critic_loss = partial(critic_minibatch_loss, self.critic)
         if cfg.compile_training and env.device.type == 'cuda':
             self.model_loss = torch.compile(self.model_loss, fullgraph=True)
             self.imagined_step = torch.compile(self.imagined_step, fullgraph=True)
-        self.imagined_return = imagined_return
-        self.critic_loss = partial(critic_minibatch_loss, self.critic)
-        if cfg.compile_policy_losses and env.device.type == 'cuda':
             self.imagined_return = torch.compile(self.imagined_return, fullgraph=True)
             self.critic_loss = torch.compile(self.critic_loss, fullgraph=True)
         fused = True if cfg.fused_adam and env.device.type == 'cuda' else None
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=cfg.actor_learning_rate,
-                                                betas=(0.9, 0.95), fused=fused, capturable=self.graph_policy)
+                                                betas=(0.9, 0.95), fused=fused, capturable=self.use_cuda_graph)
         self.model_optimizer = torch.optim.Adam(self.model.parameters(), lr=cfg.learning_rate, fused=fused)
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=cfg.learning_rate,
-                                                 fused=fused, capturable=self.graph_policy)
+                                                 fused=fused, capturable=self.use_cuda_graph)
         self.replay = ReplayBuffer(cfg.buffer_steps, env.num_envs, env.device)
         self.driver = None
         self.driver_mask = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
@@ -382,10 +371,10 @@ class Trainer:
 
     def fit_model(self):
         losses = []
-        use_graph = self.cfg.cuda_graph_model and self.env.device.type == 'cuda'
+        use_graph = self.use_cuda_graph
         for _ in range(self.cfg.model_updates):
             window = self.replay.sample_windows(self.cfg.model_batch, self.cfg.model_window,
-                                                complete_frames=self.cfg.official_replay_ratio is not None)
+                                                complete_frames=self.cfg.uses_official_schedule)
             if use_graph:
                 if self.graphed_model_backward is None:
                     with torch.cuda.device(self.env.device):
@@ -434,7 +423,7 @@ class Trainer:
         start = perf_counter()
         seed = self.replay.sample_starts(cfg.imagination_batch)
         with frozen(self.model, self.critic):
-            if self.graph_policy:
+            if self.use_cuda_graph:
                 if self.graphed_actor_backward is None:
                     with torch.cuda.device(self.env.device):
                         self.graphed_actor_backward = GraphedBackward(
@@ -444,8 +433,8 @@ class Trainer:
                 loss, outputs = self.actor_loss(seed)
             objective, data, survival, behavior = outputs
             grad = optimize(loss, self.actor_optimizer, self.actor.parameters(), cfg.grad_norm,
-                            cfg.actor_grad_value, backward=not self.graph_policy,
-                            step=self.graphed_actor_backward.step if self.graph_policy else None)
+                            cfg.actor_grad_value, backward=not self.use_cuda_graph,
+                            step=self.graphed_actor_backward.step if self.use_cuda_graph else None)
         stats = {'imagined_return': objective.item(), 'imagined_survival': survival.item(),
                  'actor_grad_norm': grad, 'behavior_loss': behavior.item(), 'critic_loss': 0.0}
         critic_start = perf_counter()
@@ -457,9 +446,9 @@ class Trainer:
         x = data['inputs'][:, :-1].reshape(-1, data['inputs'].shape[-1])
         losses = []
         ids = None
-        graph_critic = self.graph_policy and x.shape[0] % cfg.critic_minibatches == 0
+        graph_critic = self.use_cuda_graph and x.shape[0] % cfg.critic_minibatches == 0
         for _ in range(cfg.critic_epochs):
-            if ids is None or cfg.official_replay_ratio is None:
+            if ids is None or not cfg.uses_official_schedule:
                 ids = torch.randperm(x.shape[0], device=x.device).tensor_split(cfg.critic_minibatches)
             for minibatch in ids:
                 batch = {'inputs': x[minibatch], 'targets': targets[minibatch]}
@@ -516,10 +505,10 @@ def train(config, output):
     env = QuadrupedEnv(config, record_transitions=True)
     with closing(env), cuda_matmul_tf32(cfg.tf32 and env.device.type == 'cuda'):
         trainer = Trainer(env, cfg)
-        if cfg.official_replay_ratio is None:
+        if not cfg.uses_official_schedule:
             while trainer.replay.size < cfg.model_window:
                 trainer.collect()
-        replay_budget = env.num_envs * cfg.collect_steps * (cfg.official_replay_ratio or 0)
+        replay_budget = env.num_envs * cfg.collect_steps * OFFICIAL_REPLAY_RATIO
         update_cost = cfg.model_updates * cfg.model_batch * cfg.model_window
         policy_updates = 0
         with (output / 'metrics.jsonl').open('w') as log:
@@ -529,7 +518,7 @@ def train(config, output):
                 stats.update(collect_seconds=perf_counter() - start, model_seconds=0.0,
                              actor_seconds=0.0, critic_seconds=0.0)
                 updates = 1
-                if cfg.official_replay_ratio is not None:
+                if cfg.uses_official_schedule:
                     step = iteration - 1
                     # Official scheduling starts with a tick at step zero. Subsequent
                     # ticks track the accumulated update budget, even before replay is ready.

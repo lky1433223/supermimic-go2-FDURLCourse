@@ -28,7 +28,6 @@ trainer:
   model_window: 8
   model_batch: 2048
   model_updates: 10
-  official_replay_ratio: 16
   imagination_batch: 4096
   horizon: 32
   critic_epochs: 5
@@ -38,9 +37,7 @@ trainer:
   tf32: true
   fused_adam: true
   compile_training: true
-  compile_policy_losses: true
-  cuda_graph_model: true
-  cuda_graph_policy: true
+  cuda_graph: true
   bootstrap_weight: 1.0
   driver_fraction: 0.5
   gamma: 0.99
