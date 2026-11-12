@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass
 import json
 import math
 from pathlib import Path
+from time import perf_counter
 
 import torch
 from torch import nn
@@ -153,7 +154,9 @@ def imagined_rollout(env, model, actor, critic, seed, cfg):
     for t in range(cfg.horizon):
         robot = unpack(state)
         features = env.task.model_features(robot, context)
-        inputs.append(critic_input(state, previous_action, context, features))
+        if cfg.bootstrap_weight:
+            with torch.no_grad():
+                inputs.append(critic_input(state, previous_action, context, features))
         action = actor(env.task.observe(robot, previous_action, context))
         _, action = env.controller.target(action)
         next_state, torque = model(state, action, previous_action, features)
@@ -163,17 +166,22 @@ def imagined_rollout(env, model, actor, critic, seed, cfg):
         continuation = 1 - env.task.termination_probability(next_robot, context, cfg.height_softness, cfg.upright_softness)
         objective = objective + cfg.gamma**t * survival * reward
         survival = survival * continuation
-        rewards.append(reward.detach())
-        continuations.append(continuation.detach())
+        if cfg.bootstrap_weight:
+            rewards.append(reward.detach())
+            continuations.append(continuation.detach())
         context = env.task.advance_context(context, next_robot)
         state, previous_action = next_state, action
-    features = env.task.model_features(unpack(state), context)
-    inputs.append(critic_input(state, previous_action, context, features))
     if cfg.bootstrap_weight:
-        objective = objective + cfg.bootstrap_weight * cfg.gamma**cfg.horizon * survival * critic(inputs[-1])
-    return objective.mean(), {'inputs': torch.stack(inputs, 1).detach(),
-                              'rewards': torch.stack(rewards, 1),
-                              'continuations': torch.stack(continuations, 1)}, survival.detach().mean()
+        features = env.task.model_features(unpack(state), context)
+        final_input = critic_input(state, previous_action, context, features)
+        objective = objective + cfg.bootstrap_weight * cfg.gamma**cfg.horizon * survival * critic(final_input)
+        inputs.append(final_input.detach())
+        data = {'inputs': torch.stack(inputs, 1),
+                'rewards': torch.stack(rewards, 1),
+                'continuations': torch.stack(continuations, 1)}
+    else:
+        data = {}
+    return objective.mean(), data, survival.detach().mean()
 
 
 @torch.no_grad()
@@ -295,6 +303,7 @@ class Trainer:
 
     def improve_policy(self):
         cfg = self.cfg
+        start = perf_counter()
         seed = self.replay.sample_starts(cfg.imagination_batch)
         with frozen(self.model, self.critic):
             objective, data, survival = imagined_rollout(self.env, self.model, self.actor, self.critic, seed, cfg)
@@ -303,6 +312,9 @@ class Trainer:
                             self.actor.parameters(), cfg.grad_norm, cfg.actor_grad_value)
         stats = {'imagined_return': objective.item(), 'imagined_survival': survival.item(),
                  'actor_grad_norm': grad, 'behavior_loss': behavior.item(), 'critic_loss': 0.0}
+        critic_start = perf_counter()
+        stats['actor_seconds'] = critic_start - start
+        stats['critic_seconds'] = 0.0
         if cfg.bootstrap_weight == 0:
             return stats
         targets = lambda_returns(self.critic, data, cfg.gamma, cfg.gae_lambda).flatten()
@@ -314,6 +326,7 @@ class Trainer:
                 optimize(loss, self.critic_optimizer, self.critic.parameters(), cfg.grad_norm)
                 losses.append(loss.item())
         stats['critic_loss'] = sum(losses) / len(losses)
+        stats['critic_seconds'] = perf_counter() - critic_start
         return stats
 
     def save(self, output, iteration):
@@ -341,13 +354,19 @@ def train(config, output):
             trainer.collect()
         with (output / 'metrics.jsonl').open('w') as log:
             for iteration in range(1, cfg.iterations + 1):
+                start = perf_counter()
                 stats = trainer.collect()
+                model_start = perf_counter()
                 stats['model_loss'] = trainer.fit_model()
+                policy_start = perf_counter()
+                stats.update(collect_seconds=model_start - start, model_seconds=policy_start - model_start,
+                             actor_seconds=0.0, critic_seconds=0.0)
                 stats['policy_updates'] = max(0, iteration - cfg.warmup_iterations)
                 if iteration > cfg.warmup_iterations:
                     stats.update(trainer.improve_policy())
                 elif cfg.behavior_updates:
                     stats['behavior_loss'] = trainer.warmup_actor()
+                    stats['actor_seconds'] = perf_counter() - policy_start
                 stats.update(iteration=iteration, environment_steps=env.environment_steps)
                 log.write(json.dumps(stats, allow_nan=False) + '\n')
                 log.flush()

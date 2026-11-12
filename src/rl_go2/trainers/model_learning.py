@@ -120,10 +120,11 @@ class DynamicsModel(nn.Module):
         self.output_norm.update(self.targets(record['state'], record['next_state'], record['torque']))
 
     def forward(self, state, action, previous_action, features):
-        raw = self.net(self.input_norm(self.inputs(state, action, previous_action, features)))
-        delta = raw * self.output_norm.scale() + self.output_norm.mean
         frame = heading(state[:, 3:7])
         before = local_state(state, frame)
+        inputs = torch.cat((before, action, features), -1)
+        raw = self.net(self.input_norm(inputs))
+        delta = raw * self.output_norm.scale() + self.output_norm.mean
         after = before[:, 1:] + delta[:, 3:STATE_DIM]
         q = canonical_quat(quat_mul(frame, canonical_quat(after[:, :4])))
         rotate = lambda v: rotate_inverse(conjugate(frame), v)

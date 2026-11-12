@@ -260,8 +260,9 @@ class SuperMimicTests(unittest.TestCase):
         trainer = self.make_trainer()
         trainer.collect()
         seed = trainer.replay.sample_starts(8)
-        objective, _, _ = imagined_rollout(trainer.env, trainer.model, trainer.actor, Poison(), seed, self.cfg)
+        objective, data, _ = imagined_rollout(trainer.env, trainer.model, trainer.actor, Poison(), seed, self.cfg)
         self.assertTrue(torch.isfinite(objective))
+        self.assertEqual(data, {})
 
     def test_config_validation(self):
         for change in ({'model_window': 300}, {'horizon': 0}, {'gamma': 1.}, {'height_softness': 0.}, {'behavior_updates': 1}, {'behavior_weight': -1.}, {'bootstrap_weight': 2.}):
