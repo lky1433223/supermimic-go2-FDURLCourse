@@ -252,7 +252,7 @@ uv run --extra train --extra unitree python -m unittest discover -s tests -v
 
 已跑通的方案是 **PPO 引导预热 + 行为约束下的可微世界模型优化**。actor 随机初始化，不复制 PPO 网络权重；
 训练时用已有 PPO 策略采集一部分走路数据并提供监督动作，部署时只运行独立 actor。
-新增的从零 GPU 配方 `flat_supermimic_bootstrap.yaml` 也已通过下面记录的速度跟踪验收；
+从零 GPU 配方的历史版本也通过了下面记录的速度跟踪验收；
 它是本项目的 SuperMimic 式实现，尚无证据优于 PPO，也不能据速度指标认定步态已经正常。
 
 算法参考 [SuperMimic](https://arxiv.org/abs/2610.28480) 和
@@ -290,8 +290,11 @@ GPU 可覆盖 `--device cuda --num-envs ...`，但不同规模尚未重新调优
 
 ### 从零 GPU 配方：关节限位与 critic bootstrap
 
-`flat_supermimic_bootstrap.yaml` 使用 4096 环境、40000 轮、300 轮世界模型预热，
-不加载教师或旧权重。关节目标角按 `go2.yaml` 的物理范围向内留出 0.05 rad，
+`flat_supermimic_bootstrap.yaml` 使用 4096 环境、40000 个采样轮，不加载教师或旧权重。
+当前配方从第 1 轮起计入 replay 采样；有足够帧后按官方调度每 5 个采样轮约更新 2 次。
+每次更新用 10 批 × 2048 个同回合 8 帧窗口拟合世界模型，每个窗口监督后 7 帧，
+随后用 4096 条 32 步预测轨迹训练 actor 和 critic。Critic 的 5 个 epoch 复用同一次打乱。
+关节目标角按 `go2.yaml` 的物理范围向内留出 0.05 rad，
 真实仿真、replay 和 imagined rollout 均使用裁剪后的动作；历史配置没有限位字段时保留原行为。
 
 ```bash
@@ -302,7 +305,8 @@ uv run --extra train python scripts/evaluate_tracking.py --run-dir output/flat-s
   --output output/flat-supermimic-bootstrap-001/evaluation/tracking-mujoco.json --require-tracking
 ```
 
-2026-11-02 ICC GPU 1 的一次完整训练，在 MuJoCo 5 个种子共 300 秒测试中零摔倒，
+2026-11-02 ICC GPU 1 的一次完整训练使用旧调度（300 轮世界模型预热、每轮 2 个模型 batch、
+8192 条预测轨迹）。该策略在 MuJoCo 5 个种子共 300 秒测试中零摔倒，
 vx/vy/yaw RMSE 分别为 0.0586 m/s、0.0179 m/s、0.0404 rad/s。
 该结果来自单次训练，不包含步态质量验收；模型、日志和视频均保留在被 Git 忽略的 `output/` 内。
 
@@ -352,7 +356,8 @@ Actor 保持 45 维策略观测和 12 维有界动作，沿用现有 PD、关节
 世界模型看到去除水平位置和 heading 的局部 Markov 状态与当前动作，保留预测世界位姿用于地形查询；
 同时监督预测最后一个物理子步的力矩，用于原有力矩奖励，未替换成控制步末 PD 估计。
 Replay 保存实际执行的裁剪动作、previous_action、上下文、reward、driver 来源和重置前 next_state。
-终止/超时当步的模型目标保留，只屏蔽窗口中 reset 后的后续步骤。
+旧调度的窗口保留终止/超时当步的模型目标，并屏蔽 reset 后的后续步骤。
+启用 `official_replay_ratio` 的配方抽取完整同回合窗口，以第一帧为起点监督后续帧。
 
 支持模型训练的任务额外提供以下纯批量接口：
 

@@ -30,6 +30,8 @@ class TrainConfig:
     model_window: int = 8
     model_batch: int = 256
     model_updates: int = 4
+    # Enables the official replay schedule, complete frame windows and critic shuffling.
+    official_replay_ratio: int | None = None
     imagination_batch: int = 256
     horizon: int = 32
     critic_epochs: int = 5
@@ -70,6 +72,11 @@ class TrainConfig:
             raise ValueError('warmup_iterations must be a nonnegative integer')
         if self.buffer_steps < self.model_window:
             raise ValueError('buffer_steps must be >= model_window')
+        if self.official_replay_ratio is not None:
+            if type(self.official_replay_ratio) is not int or self.official_replay_ratio < 1:
+                raise ValueError('official_replay_ratio must be a positive integer')
+            if self.model_window < 2 or self.warmup_iterations or self.behavior_updates:
+                raise ValueError('Official replay requires at least two frames and no separate warmup')
         for key in ('model_hidden', 'actor_hidden', 'critic_hidden'):
             if not getattr(self, key) or any(type(x) is not int or x < 1 for x in getattr(self, key)):
                 raise ValueError(f'{key} must contain positive integer widths')
@@ -272,7 +279,8 @@ class Trainer:
     def fit_model(self):
         losses = []
         for _ in range(self.cfg.model_updates):
-            window = self.replay.sample_windows(self.cfg.model_batch, self.cfg.model_window)
+            window = self.replay.sample_windows(self.cfg.model_batch, self.cfg.model_window,
+                                                complete_frames=self.cfg.official_replay_ratio is not None)
             loss = self.model.loss(window)
             optimize(loss, self.model_optimizer, self.model.parameters(), self.cfg.grad_norm)
             losses.append(loss.item())
@@ -320,9 +328,12 @@ class Trainer:
         targets = lambda_returns(self.critic, data, cfg.gamma, cfg.gae_lambda).flatten()
         x = data['inputs'][:, :-1].reshape(-1, data['inputs'].shape[-1])
         losses = []
+        ids = None
         for _ in range(cfg.critic_epochs):
-            for ids in torch.randperm(x.shape[0], device=x.device).tensor_split(cfg.critic_minibatches):
-                loss = (self.critic(x[ids]) - targets[ids]).square().mean()
+            if ids is None or cfg.official_replay_ratio is None:
+                ids = torch.randperm(x.shape[0], device=x.device).tensor_split(cfg.critic_minibatches)
+            for minibatch in ids:
+                loss = (self.critic(x[minibatch]) - targets[minibatch]).square().mean()
                 optimize(loss, self.critic_optimizer, self.critic.parameters(), cfg.grad_norm)
                 losses.append(loss.item())
         stats['critic_loss'] = sum(losses) / len(losses)
@@ -350,24 +361,43 @@ def train(config, output):
     env = QuadrupedEnv(config, record_transitions=True)
     try:
         trainer = Trainer(env, cfg)
-        while trainer.replay.size < cfg.model_window:
-            trainer.collect()
+        if cfg.official_replay_ratio is None:
+            while trainer.replay.size < cfg.model_window:
+                trainer.collect()
+        replay_budget = env.num_envs * cfg.collect_steps * (cfg.official_replay_ratio or 0)
+        update_cost = cfg.model_updates * cfg.model_batch * cfg.model_window
+        policy_updates = 0
         with (output / 'metrics.jsonl').open('w') as log:
             for iteration in range(1, cfg.iterations + 1):
                 start = perf_counter()
                 stats = trainer.collect()
-                model_start = perf_counter()
-                stats['model_loss'] = trainer.fit_model()
-                policy_start = perf_counter()
-                stats.update(collect_seconds=model_start - start, model_seconds=policy_start - model_start,
+                stats.update(collect_seconds=perf_counter() - start, model_seconds=0.0,
                              actor_seconds=0.0, critic_seconds=0.0)
-                stats['policy_updates'] = max(0, iteration - cfg.warmup_iterations)
-                if iteration > cfg.warmup_iterations:
-                    stats.update(trainer.improve_policy())
-                elif cfg.behavior_updates:
-                    stats['behavior_loss'] = trainer.warmup_actor()
-                    stats['actor_seconds'] = perf_counter() - policy_start
-                stats.update(iteration=iteration, environment_steps=env.environment_steps)
+                updates = 1
+                if cfg.official_replay_ratio is not None:
+                    step = iteration - 1
+                    # Official scheduling starts with a tick at step zero. Subsequent
+                    # ticks track the accumulated update budget, even before replay is ready.
+                    updates = (1 if step == 0 else
+                               step * replay_budget // update_cost - (step - 1) * replay_budget // update_cost)
+                    if trainer.replay.size < cfg.model_window:
+                        updates = 0
+                for _ in range(updates):
+                    model_start = perf_counter()
+                    stats['model_loss'] = trainer.fit_model()
+                    stats['model_seconds'] += perf_counter() - model_start
+                    if iteration > cfg.warmup_iterations:
+                        policy = trainer.improve_policy()
+                        policy['actor_seconds'] += stats['actor_seconds']
+                        policy['critic_seconds'] += stats['critic_seconds']
+                        stats.update(policy)
+                        policy_updates += 1
+                    elif cfg.behavior_updates:
+                        actor_start = perf_counter()
+                        stats['behavior_loss'] = trainer.warmup_actor()
+                        stats['actor_seconds'] += perf_counter() - actor_start
+                stats.update(iteration=iteration, environment_steps=env.environment_steps,
+                             policy_updates=policy_updates)
                 log.write(json.dumps(stats, allow_nan=False) + '\n')
                 log.flush()
                 if iteration % cfg.log_interval == 0 or iteration == cfg.iterations:

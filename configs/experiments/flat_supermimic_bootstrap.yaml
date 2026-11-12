@@ -1,4 +1,4 @@
-# From-scratch GPU recipe evaluated at iteration 40000; no PPO teacher.
+# From-scratch GPU recipe with the official replay schedule; no PPO teacher.
 scene: ../scenes/flat.yaml
 robot: ../robots/go2.yaml
 task: ../tasks/flat_walk.yaml
@@ -13,7 +13,7 @@ trainer:
   iterations: 40000
   collect_steps: 1
   buffer_steps: 1000
-  warmup_iterations: 300
+  warmup_iterations: 0
   model_hidden:
   - 1024
   - 1024
@@ -28,8 +28,9 @@ trainer:
   - 128
   model_window: 8
   model_batch: 2048
-  model_updates: 2
-  imagination_batch: 8192
+  model_updates: 10
+  official_replay_ratio: 16
+  imagination_batch: 4096
   horizon: 32
   critic_epochs: 5
   critic_minibatches: 4

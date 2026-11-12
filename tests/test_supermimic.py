@@ -1,8 +1,11 @@
 """Replay boundaries, model fitting, analytic policy gradients and export contract."""
 from copy import deepcopy
+from dataclasses import asdict
+import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import torch
 
@@ -10,7 +13,7 @@ from rl_go2.config import load_experiment
 from rl_go2.env import QuadrupedEnv
 from rl_go2.trainers.model_learning import DynamicsModel, ReplayBuffer, pack, unpack, quat_mul, conjugate
 from rl_go2.state import rotate_inverse
-from rl_go2.trainers.supermimic import Trainer, TrainConfig, imagined_rollout, frozen, lambda_returns
+from rl_go2.trainers.supermimic import Trainer, TrainConfig, imagined_rollout, frozen, lambda_returns, train
 from test_framework import FakeBackend
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,6 +44,41 @@ class SuperMimicTests(unittest.TestCase):
         b.data['terminated'].zero_()
         b.data['truncated'][b._slots(torch.tensor(1))] = True
         torch.testing.assert_close(b.sample_windows(8, 4)['valid'], torch.tensor([1., 1., 0., 0.]).expand(8, -1))
+
+    def test_official_windows_exclude_resets_and_score_one_fewer_step(self):
+        replay = ReplayBuffer(4, 2, 'cpu')
+        for t in range(7):
+            state = torch.tensor([[float(t)], [float(t + 100)]])
+            record = dict.fromkeys(('state', 'action', 'previous_action', 'torque', 'features'), state)
+            record.update(terminated=torch.tensor([t == 4, t == 6]),
+                          truncated=torch.zeros(2, dtype=torch.bool))
+            replay.add(record)
+        window = replay.sample_windows(8, 4, complete_frames=True)
+        torch.testing.assert_close(window['state'][..., 0], torch.tensor([103., 104., 105.]).expand(8, -1))
+        torch.testing.assert_close(window['next_state'], window['state'] + 1)
+        self.assertTrue(window['valid'].all())
+
+    def test_official_schedule_counts_collection_and_reuses_critic_shuffle(self):
+        self.cfg.collect_steps = 1
+        self.cfg.model_window = 8
+        self.cfg.model_batch = 2
+        self.cfg.model_updates = 10
+        self.cfg.official_replay_ratio = 32  # Two fake environments give the same 0.4 update frequency.
+        self.cfg.warmup_iterations = 0
+        self.cfg.iterations = 11
+        self.cfg.critic_epochs = 2
+        self.cfg.bootstrap_weight = 1.0
+        self.config['trainer'] = asdict(self.cfg)
+        with tempfile.TemporaryDirectory() as directory, \
+                patch('rl_go2.env.make_backend', return_value=FakeBackend(self.config)), \
+                patch('torch.randperm', wraps=torch.randperm) as shuffle:
+            output = Path(directory) / 'train'
+            train(self.config, output)
+            metrics = [json.loads(line) for line in (output / 'metrics.jsonl').read_text().splitlines()]
+        self.assertEqual([row['environment_steps'] for row in metrics], list(range(2, 23, 2)))
+        self.assertEqual([row['iteration'] for row in metrics if 'model_loss' in row], [9, 11])
+        self.assertEqual(metrics[-1]['policy_updates'], 2)
+        self.assertEqual(shuffle.call_count, 2)
 
     def test_context_matches_real_resample_and_reward(self):
         trainer = self.make_trainer()

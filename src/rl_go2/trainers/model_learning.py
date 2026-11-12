@@ -170,9 +170,29 @@ class ReplayBuffer:
         env = torch.randint(self.num_envs, (batch,), device=self.device)
         return {k: v[t, env] for k, v in self.data.items()}
 
-    def sample_windows(self, batch, steps):
+    def sample_windows(self, batch, steps, *, complete_frames=False):
         if self.size < steps:
             raise ValueError('Not enough replay steps')
+        if complete_frames:
+            slots = self._slots(torch.arange(self.size, device=self.device))
+            done = (self.data['terminated'] | self.data['truncated'])[slots]
+            counts = torch.cat((done.new_zeros((1, self.num_envs)), done.cumsum(0)))
+            # A reset after the last frame does not break the window.
+            starts = (counts[steps - 1:self.size] == counts[:self.size - steps + 1]).T
+            cumulative = starts.cumsum(1)
+            totals = cumulative[:, -1]
+            if not (totals > 0).any():
+                raise ValueError(f'No complete replay windows of {steps} frames')
+            env = torch.multinomial((totals > 0).float(), batch, replacement=True)
+            choice = (torch.rand(batch, device=self.device) * totals[env]).long()
+            start = torch.searchsorted(cumulative[env], choice[:, None], right=True)
+            t = self._slots(start + torch.arange(steps - 1, device=self.device))
+            window = {key: self.data[key][t, env[:, None]]
+                      for key in ('state', 'action', 'previous_action', 'torque', 'features')}
+            window['next_state'] = self.data['state'][(t + 1) % self.length, env[:, None]]
+            window['valid'] = torch.ones_like(t, dtype=torch.bool)
+            return window
+
         t = torch.randint(self.size - steps + 1, (batch, 1), device=self.device)
         t = self._slots(t + torch.arange(steps, device=self.device))
         env = torch.randint(self.num_envs, (batch, 1), device=self.device)
