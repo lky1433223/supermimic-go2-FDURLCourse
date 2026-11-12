@@ -39,6 +39,7 @@ trainer:
   fused_adam: true
   compile_training: true
   compile_policy_losses: true
+  cuda_graph_model: true
   bootstrap_weight: 1.0
   driver_fraction: 0.5
   gamma: 0.99

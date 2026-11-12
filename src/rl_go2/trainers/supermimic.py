@@ -43,6 +43,7 @@ class TrainConfig:
     fused_adam: bool = False
     compile_training: bool = False
     compile_policy_losses: bool = False
+    cuda_graph_model: bool = False
     bootstrap_weight: float = 0.0
     driver_policy: str | None = None
     driver_fraction: float = 0.5
@@ -68,6 +69,8 @@ class TrainConfig:
             raise ValueError('compile_training must be a boolean')
         if type(self.compile_policy_losses) is not bool:
             raise ValueError('compile_policy_losses must be a boolean')
+        if type(self.cuda_graph_model) is not bool:
+            raise ValueError('cuda_graph_model must be a boolean')
         integer_fields = ('iterations', 'collect_steps', 'buffer_steps', 'model_window', 'model_batch',
                           'model_updates', 'imagination_batch', 'horizon', 'critic_epochs',
                           'critic_minibatches', 'save_interval', 'log_interval')
@@ -144,12 +147,13 @@ def frozen(*modules):
             p.requires_grad_(flag)
 
 
-def optimize(loss, optimizer, parameters, norm, value=None):
+def optimize(loss, optimizer, parameters, norm, value=None, *, backward=True):
     parameters = list(parameters)
     if not torch.isfinite(loss):
         raise RuntimeError('Non-finite SuperMimic loss')
-    optimizer.zero_grad(set_to_none=True)
-    loss.backward()
+    if backward:
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
     grad = nn.utils.clip_grad_norm_(parameters, norm, error_if_nonfinite=True)
     if value is not None:
         nn.utils.clip_grad_value_(parameters, value)
@@ -235,6 +239,37 @@ def lambda_returns(critic, data, gamma, lam):
     return torch.stack(list(reversed(targets)), 1)
 
 
+class GraphedModelBackward:
+    def __init__(self, loss_fn, optimizer, window, device):
+        self.window = {key: value.clone() for key, value in window.items()}
+        self.stream = torch.cuda.Stream(device=device)
+        self.graph = torch.cuda.CUDAGraph()
+        caller = torch.cuda.current_stream(device)
+        self.stream.wait_stream(caller)
+        # Keep AccumulateGrad on the same stream during warmup and capture.
+        with torch.cuda.stream(self.stream):
+            for _ in range(3):
+                optimizer.zero_grad(set_to_none=True)
+                loss_fn(self.window).backward()
+            # Allocate gradients inside the graph so replay overwrites them.
+            optimizer.zero_grad(set_to_none=True)
+            with torch.cuda.graph(self.graph, stream=self.stream):
+                loss = loss_fn(self.window)
+                loss.backward()
+                self.loss = loss.detach()
+        caller.wait_stream(self.stream)
+
+    def __call__(self, window):
+        caller = torch.cuda.current_stream(self.stream.device)
+        self.stream.wait_stream(caller)
+        with torch.cuda.stream(self.stream):
+            for key, value in window.items():
+                self.window[key].copy_(value)
+            self.graph.replay()
+        caller.wait_stream(self.stream)
+        return self.loss
+
+
 class Trainer:
     def __init__(self, env, cfg):
         self.env, self.cfg = env, cfg
@@ -251,6 +286,7 @@ class Trainer:
         self.model = DynamicsModel(features.shape[-1], cfg.model_hidden).to(env.device)
         self.critic = Critic(ci.shape[-1], cfg.critic_hidden).to(env.device)
         self.model_loss = self.model.loss
+        self.graphed_model_backward = None
         self.imagined_step = partial(imagined_step, env, self.model, self.actor, cfg)
         if cfg.compile_training and env.device.type == 'cuda':
             self.model_loss = torch.compile(self.model_loss, fullgraph=True)
@@ -322,11 +358,19 @@ class Trainer:
 
     def fit_model(self):
         losses = []
+        use_graph = self.cfg.cuda_graph_model and self.env.device.type == 'cuda'
         for _ in range(self.cfg.model_updates):
             window = self.replay.sample_windows(self.cfg.model_batch, self.cfg.model_window,
                                                 complete_frames=self.cfg.official_replay_ratio is not None)
-            loss = self.model_loss(window)
-            optimize(loss, self.model_optimizer, self.model.parameters(), self.cfg.grad_norm)
+            if use_graph:
+                if self.graphed_model_backward is None:
+                    with torch.cuda.device(self.env.device):
+                        self.graphed_model_backward = GraphedModelBackward(
+                            self.model_loss, self.model_optimizer, window, self.env.device)
+                loss = self.graphed_model_backward(window)
+            else:
+                loss = self.model_loss(window)
+            optimize(loss, self.model_optimizer, self.model.parameters(), self.cfg.grad_norm, backward=not use_graph)
             losses.append(loss.item())
         return sum(losses) / len(losses)
 
