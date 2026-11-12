@@ -3,8 +3,9 @@
 Independent reproduction inspired by Zhengtianjin/go2-supermimic (MIT) and
 Liao et al., arXiv:2610.28480. No mjlab code or task-specific assets are required.
 """
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import asdict, dataclass
+from functools import partial
 import json
 import math
 from pathlib import Path
@@ -38,6 +39,10 @@ class TrainConfig:
     critic_minibatches: int = 4
     learning_rate: float = 0.0002
     actor_learning_rate: float = 0.0002
+    tf32: bool = False
+    fused_adam: bool = False
+    compile_training: bool = False
+    compile_policy_losses: bool = False
     bootstrap_weight: float = 0.0
     driver_policy: str | None = None
     driver_fraction: float = 0.5
@@ -55,6 +60,14 @@ class TrainConfig:
     log_interval: int = 10
 
     def validate(self):
+        if type(self.tf32) is not bool:
+            raise ValueError('tf32 must be a boolean')
+        if type(self.fused_adam) is not bool:
+            raise ValueError('fused_adam must be a boolean')
+        if type(self.compile_training) is not bool:
+            raise ValueError('compile_training must be a boolean')
+        if type(self.compile_policy_losses) is not bool:
+            raise ValueError('compile_policy_losses must be a boolean')
         integer_fields = ('iterations', 'collect_steps', 'buffer_steps', 'model_window', 'model_batch',
                           'model_updates', 'imagination_batch', 'horizon', 'critic_epochs',
                           'critic_minibatches', 'save_interval', 'log_interval')
@@ -153,39 +166,58 @@ def critic_input(state, previous_action, context, features):
                       *(context[key].reshape(state.shape[0], -1).float() for key in sorted(context))), -1)
 
 
-def imagined_rollout(env, model, actor, critic, seed, cfg):
-    state, previous_action, context = seed['state'], seed['previous_action'], context_from(seed)
-    survival = torch.ones(state.shape[0], device=state.device)
+def imagined_step(env, model, actor, cfg, state, previous_action, context):
+    robot = unpack(state)
+    features = env.task.model_features(robot, context)
+    inputs = None
+    if cfg.bootstrap_weight:
+        with torch.no_grad():
+            inputs = critic_input(state, previous_action, context, features)
+    action = actor(env.task.observe(robot, previous_action, context))
+    _, action = env.controller.target(action)
+    next_state, torque = model(state, action, previous_action, features)
+    next_robot = unpack(next_state)
+    torque = torque.clamp(-env.controller.limits, env.controller.limits)
+    reward = env.task.reward(next_robot, action, previous_action, torque, context)
+    continuation = 1 - env.task.termination_probability(next_robot, context, cfg.height_softness, cfg.upright_softness)
+    return next_state, action, reward, continuation, inputs
+
+
+def imagined_return(rewards, continuations, gamma):
+    survival = torch.ones_like(rewards[0])
     objective = torch.zeros_like(survival)
-    rewards, continuations, inputs = [], [], []
-    for t in range(cfg.horizon):
-        robot = unpack(state)
-        features = env.task.model_features(robot, context)
-        if cfg.bootstrap_weight:
-            with torch.no_grad():
-                inputs.append(critic_input(state, previous_action, context, features))
-        action = actor(env.task.observe(robot, previous_action, context))
-        _, action = env.controller.target(action)
-        next_state, torque = model(state, action, previous_action, features)
-        next_robot = unpack(next_state)
-        torque = torque.clamp(-env.controller.limits, env.controller.limits)
-        reward = env.task.reward(next_robot, action, previous_action, torque, context)
-        continuation = 1 - env.task.termination_probability(next_robot, context, cfg.height_softness, cfg.upright_softness)
-        objective = objective + cfg.gamma**t * survival * reward
+    for t, (reward, continuation) in enumerate(zip(rewards, continuations)):
+        objective = objective + gamma**t * survival * reward
         survival = survival * continuation
+    return objective, survival
+
+
+def critic_minibatch_loss(critic, inputs, targets, ids):
+    return (critic(inputs[ids]) - targets[ids]).square().mean()
+
+
+def imagined_rollout(env, model, actor, critic, seed, cfg, *, step=None, returns=imagined_return):
+    if step is None:
+        step = partial(imagined_step, env, model, actor, cfg)
+    state, previous_action, context = seed['state'], seed['previous_action'], context_from(seed)
+    rewards, continuations, inputs = [], [], []
+    for _ in range(cfg.horizon):
+        state, action, reward, continuation, critic_obs = step(state, previous_action, context)
+        rewards.append(reward)
+        continuations.append(continuation)
         if cfg.bootstrap_weight:
-            rewards.append(reward.detach())
-            continuations.append(continuation.detach())
-        context = env.task.advance_context(context, next_robot)
-        state, previous_action = next_state, action
+            inputs.append(critic_obs)
+        context = env.task.advance_context(context, unpack(state))
+        previous_action = action
+    objective, survival = returns(rewards, continuations, cfg.gamma)
     if cfg.bootstrap_weight:
         features = env.task.model_features(unpack(state), context)
         final_input = critic_input(state, previous_action, context, features)
         objective = objective + cfg.bootstrap_weight * cfg.gamma**cfg.horizon * survival * critic(final_input)
         inputs.append(final_input.detach())
         data = {'inputs': torch.stack(inputs, 1),
-                'rewards': torch.stack(rewards, 1),
-                'continuations': torch.stack(continuations, 1)}
+                'rewards': torch.stack([reward.detach() for reward in rewards], 1),
+                'continuations': torch.stack([value.detach() for value in continuations], 1)}
     else:
         data = {}
     return objective.mean(), data, survival.detach().mean()
@@ -218,9 +250,21 @@ class Trainer:
                            env.config['robot']['action_clip']).to(env.device)
         self.model = DynamicsModel(features.shape[-1], cfg.model_hidden).to(env.device)
         self.critic = Critic(ci.shape[-1], cfg.critic_hidden).to(env.device)
-        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=cfg.actor_learning_rate, betas=(0.9, 0.95))
-        self.model_optimizer = torch.optim.Adam(self.model.parameters(), lr=cfg.learning_rate)
-        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=cfg.learning_rate)
+        self.model_loss = self.model.loss
+        self.imagined_step = partial(imagined_step, env, self.model, self.actor, cfg)
+        if cfg.compile_training and env.device.type == 'cuda':
+            self.model_loss = torch.compile(self.model_loss, fullgraph=True)
+            self.imagined_step = torch.compile(self.imagined_step, fullgraph=True)
+        self.imagined_return = imagined_return
+        self.critic_loss = partial(critic_minibatch_loss, self.critic)
+        if cfg.compile_policy_losses and env.device.type == 'cuda':
+            self.imagined_return = torch.compile(self.imagined_return, fullgraph=True)
+            self.critic_loss = torch.compile(self.critic_loss, fullgraph=True)
+        fused = True if cfg.fused_adam and env.device.type == 'cuda' else None
+        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=cfg.actor_learning_rate,
+                                                betas=(0.9, 0.95), fused=fused)
+        self.model_optimizer = torch.optim.Adam(self.model.parameters(), lr=cfg.learning_rate, fused=fused)
+        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=cfg.learning_rate, fused=fused)
         self.replay = ReplayBuffer(cfg.buffer_steps, env.num_envs, env.device)
         self.driver = None
         self.driver_mask = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
@@ -281,7 +325,7 @@ class Trainer:
         for _ in range(self.cfg.model_updates):
             window = self.replay.sample_windows(self.cfg.model_batch, self.cfg.model_window,
                                                 complete_frames=self.cfg.official_replay_ratio is not None)
-            loss = self.model.loss(window)
+            loss = self.model_loss(window)
             optimize(loss, self.model_optimizer, self.model.parameters(), self.cfg.grad_norm)
             losses.append(loss.item())
         return sum(losses) / len(losses)
@@ -314,7 +358,9 @@ class Trainer:
         start = perf_counter()
         seed = self.replay.sample_starts(cfg.imagination_batch)
         with frozen(self.model, self.critic):
-            objective, data, survival = imagined_rollout(self.env, self.model, self.actor, self.critic, seed, cfg)
+            objective, data, survival = imagined_rollout(
+                self.env, self.model, self.actor, self.critic, seed, cfg,
+                step=self.imagined_step, returns=self.imagined_return)
             behavior = self.behavior_loss(seed) if cfg.behavior_weight else objective.new_zeros(())
             grad = optimize(-objective + cfg.behavior_weight * behavior, self.actor_optimizer,
                             self.actor.parameters(), cfg.grad_norm, cfg.actor_grad_value)
@@ -333,7 +379,7 @@ class Trainer:
             if ids is None or cfg.official_replay_ratio is None:
                 ids = torch.randperm(x.shape[0], device=x.device).tensor_split(cfg.critic_minibatches)
             for minibatch in ids:
-                loss = (self.critic(x[minibatch]) - targets[minibatch]).square().mean()
+                loss = self.critic_loss(x, targets, minibatch)
                 optimize(loss, self.critic_optimizer, self.critic.parameters(), cfg.grad_norm)
                 losses.append(loss.item())
         stats['critic_loss'] = sum(losses) / len(losses)
@@ -350,6 +396,22 @@ class Trainer:
         torch.jit.script(self.actor).save(str(output / 'policy.pt'))
 
 
+@contextmanager
+def cuda_matmul_tf32(enabled):
+    if not enabled:
+        yield
+        return
+    matmul = torch.backends.cuda.matmul
+    # PyTorch < 2.9 exposes the legacy flag instead.
+    setting, value = ('fp32_precision', 'tf32') if hasattr(matmul, 'fp32_precision') else ('allow_tf32', True)
+    previous = getattr(matmul, setting)
+    setattr(matmul, setting, value)
+    try:
+        yield
+    finally:
+        setattr(matmul, setting, previous)
+
+
 def train(config, output):
     from rl_go2.trainers import save_run_spec
     cfg = TrainConfig(**config['trainer'])
@@ -359,7 +421,7 @@ def train(config, output):
     save_run_spec(config, output)
     output = Path(output)
     env = QuadrupedEnv(config, record_transitions=True)
-    try:
+    with closing(env), cuda_matmul_tf32(cfg.tf32 and env.device.type == 'cuda'):
         trainer = Trainer(env, cfg)
         if cfg.official_replay_ratio is None:
             while trainer.replay.size < cfg.model_window:
@@ -404,5 +466,3 @@ def train(config, output):
                     print(json.dumps(stats, allow_nan=False), flush=True)
                 if iteration % cfg.save_interval == 0 or iteration == cfg.iterations:
                     trainer.save(output, iteration)
-    finally:
-        env.close()

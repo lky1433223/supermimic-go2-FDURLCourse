@@ -15,15 +15,14 @@ trainer:
   buffer_steps: 1000
   warmup_iterations: 0
   model_hidden:
-  - 1024
-  - 1024
-  - 1024
+  - 2048
+  - 2048
+  - 2048
   actor_hidden:
   - 512
   - 256
   - 128
   critic_hidden:
-  - 512
   - 256
   - 128
   model_window: 8
@@ -36,6 +35,10 @@ trainer:
   critic_minibatches: 4
   learning_rate: 0.0002
   actor_learning_rate: 0.0002
+  tf32: true
+  fused_adam: true
+  compile_training: true
+  compile_policy_losses: true
   bootstrap_weight: 1.0
   driver_fraction: 0.5
   gamma: 0.99
