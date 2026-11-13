@@ -2,6 +2,8 @@ import math
 
 import torch
 
+from rl_go2.config import MODEL_PARAMETER_KEYS
+
 from rl_go2.state import rotate_inverse
 from rl_go2.observations import OBSERVATION_TERMS, policy_observation
 
@@ -101,8 +103,9 @@ class FlatWalkTask:
 
     def model_features(self, state, context):
         """Dynamics-only features; terrain tasks can provide local scans/physics parameters."""
-        if "foot_ground_friction" in context:
-            return context["foot_ground_friction"]
+        parameters = [context[key] for key in MODEL_PARAMETER_KEYS if key in context]
+        if parameters:
+            return torch.cat(parameters, dim=-1)
         return state.position.new_zeros((state.position.shape[0], 0))
 
     def advance_context(self, context, next_state):

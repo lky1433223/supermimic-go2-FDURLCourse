@@ -1,6 +1,6 @@
 import torch
 
-from rl_go2.config import FOOT_NAMES, foot_friction_ranges
+from rl_go2.config import FOOT_NAMES, base_mass_scale_range, foot_friction_ranges
 from rl_go2.state import RobotState
 
 
@@ -24,6 +24,7 @@ class GenesisBackend:
                 enable_mujoco_compatibility=True, enable_self_collision=True,
                 friction_cone=gs.friction_cone.elliptic,
                 enable_torsional_friction=True, enable_rolling_friction=True,
+                batch_links_info=base_mass_scale_range(config) is not None,
             ),
             show_viewer=viewer,
         )
@@ -66,6 +67,13 @@ class GenesisBackend:
         if self.friction_ratios is None:
             self.friction_ratios = multipliers.to(self.device)[:, None].expand(-1, len(self.friction_geom_ids)).contiguous()
             solver.set_geoms_friction_ratio(self.friction_ratios, self.friction_geom_ids)
+
+    def set_base_mass_scale(self, scales):
+        mass = scales.to(self.device) * self.base.desc.mass
+        if not torch.isfinite(mass).all() or (mass <= 0).any():
+            raise ValueError("Sampled base mass must be finite and positive")
+        self.scene.rigid_solver.set_links_mass(mass, [self.base.idx], scale_inertia=True)
+        return mass
 
     def read_state(self):
         # Getter tensors can alias engine buffers, so snapshots must own their storage.

@@ -12,6 +12,8 @@ from pathlib import Path
 from time import perf_counter
 
 import torch
+
+from rl_go2.config import MODEL_PARAMETER_KEYS
 from torch import nn
 
 from rl_go2.env import QuadrupedEnv
@@ -161,7 +163,7 @@ def context_from(record):
 def critic_input(state, previous_action, context, features):
     return torch.cat((local_state(state, heading(state[:, 3:7])), previous_action, features,
                       *(context[key].reshape(state.shape[0], -1).float() for key in sorted(context)
-                        if key != 'foot_ground_friction')), -1)
+                        if key not in MODEL_PARAMETER_KEYS)), -1)
 
 
 def imagined_step(env, model, actor, cfg, state, previous_action, context):

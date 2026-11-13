@@ -54,6 +54,8 @@ class MujocoBackend:
         self.q_indices = self.model.jnt_qposadr[joints]
         self.v_indices = self.model.jnt_dofadr[joints]
         self.base = self.model.body(config["robot"]["base_link"]).id
+        self.nominal_base_mass = self.model.body_mass[self.base]
+        self.nominal_base_inertia = self.model.body_inertia[self.base].copy()
         if self.model.jnt_type[0] != mujoco.mjtJoint.mjJNT_FREE:
             raise ValueError("Robot model must start with a floating-base joint")
         self.motors = []
@@ -83,6 +85,16 @@ class MujocoBackend:
 
     def set_foot_ground_friction(self, base, multipliers):
         self.model.geom_friction[self.foot_ids] = (base * multipliers[0]).numpy()
+
+    def set_base_mass_scale(self, scales):
+        scale = scales.item()
+        mass = self.nominal_base_mass * scale
+        if not np.isfinite(mass) or not 0 < mass <= np.finfo(np.float32).max:
+            raise ValueError("Sampled base mass must be finite and positive in float32")
+        self.model.body_mass[self.base] = mass
+        self.model.body_inertia[self.base] = self.nominal_base_inertia * scale
+        mujoco.mj_setConst(self.model, self.data)
+        return scales.new_full((1, 1), mass)
 
     def reset(self, env_ids):
         if env_ids.numel() == 0:

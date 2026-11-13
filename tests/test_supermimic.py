@@ -248,6 +248,28 @@ class SuperMimicTests(unittest.TestCase):
         gradients = torch.autograd.grad(expected[0].sum(), (action, previous), allow_unused=True)
         self.assertIsNone(gradients[1])
 
+    def test_base_mass_reaches_physics_and_model_replay(self):
+        config = self.config
+        config.update(backend='mujoco', device='cpu', num_envs=1)
+        config['domain_randomization'] = {'base_mass': {'enabled': True, 'scale_range': [1.1, 1.1]}}
+        env = QuadrupedEnv(config, record_transitions=True)
+        self.addCleanup(env.close)
+        backend = env.backend
+        env.reset()
+        mass = backend.nominal_base_mass * 1.1
+        self.assertAlmostEqual(backend.model.body_mass[backend.base], mass, places=6)
+        torch.testing.assert_close(torch.from_numpy(backend.model.body_inertia[backend.base]),
+                                   torch.from_numpy(backend.nominal_base_inertia) * 1.1)
+        trainer = Trainer(env, self.cfg)
+        self.assertEqual(trainer.model.input_norm.mean.numel(), 48)
+        self.assertEqual(env.observe().shape[-1], 45)
+        trainer.collect()
+        seed = trainer.replay.sample_starts(3)
+        torch.testing.assert_close(seed['features'], torch.full((3, 1), mass))
+        torch.testing.assert_close(seed['context/base_mass_kg'], seed['features'])
+        trainer.fit_model()
+        trainer.improve_policy()
+
     def test_per_foot_friction_reaches_contacts_and_model_replay(self):
         config = self.config
         config.update(backend='mujoco', device='cpu', num_envs=1)

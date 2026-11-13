@@ -9,6 +9,10 @@ seed: 1
 curriculum:
   name: none
 domain_randomization:
+  base_mass:
+    enabled: false
+    # Per-environment scale of trunk mass and inertia, fixed across resets.
+    scale_range: [0.9, 1.1]
   foot_ground_friction:
     enabled: false
     # Per-foot base bounds, sampled independently per real rollout.

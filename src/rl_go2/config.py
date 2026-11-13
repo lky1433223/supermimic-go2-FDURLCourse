@@ -9,6 +9,24 @@ from rl_go2.tasks import validate_task_name
 
 FOOT_NAMES = ("FR", "FL", "RR", "RL")
 FRICTION_TERMS = ("sliding", "torsional", "rolling")
+MODEL_PARAMETER_KEYS = ("foot_ground_friction", "base_mass_kg")
+
+
+def base_mass_scale_range(config):
+    domain = config.get("domain_randomization", {})
+    if not isinstance(domain, dict):
+        raise ValueError("domain_randomization must be a mapping")
+    section = domain.get("base_mass", {})
+    if not isinstance(section, dict) or not isinstance(section.get("enabled", False), bool):
+        raise ValueError("base_mass must be a mapping with a boolean enabled flag")
+    if not section.get("enabled", False):
+        return None
+    bounds = section.get("scale_range")
+    if (not isinstance(bounds, (list, tuple)) or len(bounds) != 2
+            or not all(type(x) in (int, float) and 0 < x <= 1e30 for x in bounds)
+            or bounds[0] > bounds[1]):
+        raise ValueError("base_mass.scale_range must be a finite positive ordered pair")
+    return bounds
 
 
 def foot_friction_ranges(config):
@@ -131,4 +149,5 @@ def load_experiment(path):
     if not math.isfinite(task["episode_seconds"]) or task["episode_seconds"] <= 0:
         raise ValueError("episode_seconds must be finite and positive")
     foot_friction_ranges(config)
+    base_mass_scale_range(config)
     return config

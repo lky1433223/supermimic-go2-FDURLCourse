@@ -4,7 +4,7 @@ import math
 import torch
 
 from rl_go2.backends import make_backend
-from rl_go2.config import foot_friction_ranges
+from rl_go2.config import base_mass_scale_range, foot_friction_ranges
 from rl_go2.control import JointPositionControl
 from rl_go2.curriculum import make_curriculum
 from rl_go2.state import RobotState
@@ -55,6 +55,13 @@ class QuadrupedEnv:
             self.friction_multipliers = ratio[0] + (ratio[1] - ratio[0]) * torch.rand(
                 self.num_envs, generator=self.friction_generator)
             self.resample_foot_friction()
+        self.base_mass_kg = None
+        mass_range = base_mass_scale_range(config)
+        if mass_range is not None:
+            low, high = mass_range
+            generator = torch.Generator().manual_seed(config["seed"] ^ 0x4D415353)
+            scales = low + (high - low) * torch.rand(self.num_envs, 1, generator=generator)
+            self.base_mass_kg = self.backend.set_base_mass_scale(scales)
         self.reset()
 
     def resample_foot_friction(self):
@@ -69,6 +76,8 @@ class QuadrupedEnv:
         context = self.task.context()
         if self.foot_friction is not None:
             context["foot_ground_friction"] = self.foot_friction
+        if self.base_mass_kg is not None:
+            context["base_mass_kg"] = self.base_mass_kg
         return context
 
     def reset(self, env_ids=None, metrics=None):
