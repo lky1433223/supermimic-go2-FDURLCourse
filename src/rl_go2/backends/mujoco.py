@@ -54,6 +54,7 @@ class MujocoBackend:
         self.q_indices = self.model.jnt_qposadr[joints]
         self.v_indices = self.model.jnt_dofadr[joints]
         self.base = self.model.body(config["robot"]["base_link"]).id
+        self.nominal_base_com = self.model.body_ipos[self.base].copy()
         self.nominal_base_mass = self.model.body_mass[self.base]
         self.nominal_base_inertia = self.model.body_inertia[self.base].copy()
         if self.model.jnt_type[0] != mujoco.mjtJoint.mjJNT_FREE:
@@ -85,6 +86,10 @@ class MujocoBackend:
 
     def set_foot_ground_friction(self, base, multipliers):
         self.model.geom_friction[self.foot_ids] = (base * multipliers[0]).numpy()
+
+    def set_base_com_offset(self, offsets):
+        self.model.body_ipos[self.base] = self.nominal_base_com + offsets[0].numpy()
+        mujoco.mj_setConst(self.model, self.data)
 
     def set_base_mass_scale(self, scales):
         scale = scales.item()

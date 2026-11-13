@@ -9,7 +9,25 @@ from rl_go2.tasks import validate_task_name
 
 FOOT_NAMES = ("FR", "FL", "RR", "RL")
 FRICTION_TERMS = ("sliding", "torsional", "rolling")
-MODEL_PARAMETER_KEYS = ("foot_ground_friction", "base_mass_kg")
+MODEL_PARAMETER_KEYS = ("foot_ground_friction", "base_mass_kg", "base_com_offset_m")
+
+
+def base_com_offset_ranges(config):
+    domain = config.get("domain_randomization", {})
+    if not isinstance(domain, dict):
+        raise ValueError("domain_randomization must be a mapping")
+    section = domain.get("base_com", {})
+    if not isinstance(section, dict) or not isinstance(section.get("enabled", False), bool):
+        raise ValueError("base_com must be a mapping with a boolean enabled flag")
+    if not section.get("enabled", False):
+        return None
+    ranges = section.get("offset_ranges_m")
+    if (not isinstance(ranges, dict) or set(ranges) != {"x", "y", "z"}
+            or any(not isinstance(pair, (list, tuple)) or len(pair) != 2
+                   or not all(type(x) in (int, float) and abs(x) <= 1e30 for x in pair)
+                   or pair[0] > pair[1] for pair in ranges.values())):
+        raise ValueError("base_com.offset_ranges_m must specify finite ordered pairs for x, y and z")
+    return [ranges[axis] for axis in ("x", "y", "z")]
 
 
 def base_mass_scale_range(config):
@@ -150,4 +168,5 @@ def load_experiment(path):
         raise ValueError("episode_seconds must be finite and positive")
     foot_friction_ranges(config)
     base_mass_scale_range(config)
+    base_com_offset_ranges(config)
     return config

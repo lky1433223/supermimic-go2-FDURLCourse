@@ -9,6 +9,13 @@ seed: 1
 curriculum:
   name: none
 domain_randomization:
+  base_com:
+    enabled: false
+    # Per-environment offset from nominal trunk COM in base-link axes.
+    offset_ranges_m:
+      x: [-0.01, 0.01]
+      y: [-0.01, 0.01]
+      z: [-0.01, 0.01]
   base_mass:
     enabled: false
     # Per-environment scale of trunk mass and inertia, fixed across resets.

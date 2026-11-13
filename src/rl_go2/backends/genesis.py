@@ -1,6 +1,6 @@
 import torch
 
-from rl_go2.config import FOOT_NAMES, base_mass_scale_range, foot_friction_ranges
+from rl_go2.config import FOOT_NAMES, base_com_offset_ranges, base_mass_scale_range, foot_friction_ranges
 from rl_go2.state import RobotState
 
 
@@ -18,13 +18,14 @@ class GenesisBackend:
         self.num_envs = config["num_envs"]
         self.config = config
         sim = config["scene"]["sim_options"]
+        com_enabled = base_com_offset_ranges(config) is not None
         self.scene = gs.Scene(
             sim_options=gs.options.SimOptions(dt=sim["dt"], substeps=1, gravity=tuple(sim["gravity"])),
             rigid_options=gs.options.RigidOptions(
                 enable_mujoco_compatibility=True, enable_self_collision=True,
                 friction_cone=gs.friction_cone.elliptic,
                 enable_torsional_friction=True, enable_rolling_friction=True,
-                batch_links_info=base_mass_scale_range(config) is not None,
+                batch_links_info=com_enabled or base_mass_scale_range(config) is not None,
             ),
             show_viewer=viewer,
         )
@@ -33,6 +34,8 @@ class GenesisBackend:
         for entity in config["scene"]["entities"]:
             kwargs = dict(pos=tuple(entity["position"]), quat=tuple(entity["rotation"]))
             if entity.get("robot"):
+                if com_enabled:
+                    kwargs["align"] = False
                 self.robot = self.scene.add_entity(gs.morphs.MJCF(file=entity["file"], **kwargs))
             else:
                 if entity["type"] == "plane":
@@ -67,6 +70,11 @@ class GenesisBackend:
         if self.friction_ratios is None:
             self.friction_ratios = multipliers.to(self.device)[:, None].expand(-1, len(self.friction_geom_ids)).contiguous()
             solver.set_geoms_friction_ratio(self.friction_ratios, self.friction_geom_ids)
+
+    def set_base_com_offset(self, offsets):
+        nominal = offsets.new_tensor(self.base.desc.inertial_pos)
+        com = (nominal + offsets).to(self.device)
+        self.scene.rigid_solver.set_links_COM(com[:, None, :], [self.base.idx])
 
     def set_base_mass_scale(self, scales):
         mass = scales.to(self.device) * self.base.desc.mass

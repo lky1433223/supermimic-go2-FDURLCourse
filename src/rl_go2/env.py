@@ -4,7 +4,7 @@ import math
 import torch
 
 from rl_go2.backends import make_backend
-from rl_go2.config import base_mass_scale_range, foot_friction_ranges
+from rl_go2.config import base_com_offset_ranges, base_mass_scale_range, foot_friction_ranges
 from rl_go2.control import JointPositionControl
 from rl_go2.curriculum import make_curriculum
 from rl_go2.state import RobotState
@@ -62,6 +62,14 @@ class QuadrupedEnv:
             generator = torch.Generator().manual_seed(config["seed"] ^ 0x4D415353)
             scales = low + (high - low) * torch.rand(self.num_envs, 1, generator=generator)
             self.base_mass_kg = self.backend.set_base_mass_scale(scales)
+        self.base_com_offset_m = None
+        com_ranges = base_com_offset_ranges(config)
+        if com_ranges is not None:
+            low, high = torch.tensor(com_ranges, dtype=torch.float32).unbind(-1)
+            generator = torch.Generator().manual_seed(config["seed"] ^ 0x434F4D)
+            offsets = low + (high - low) * torch.rand(self.num_envs, 3, generator=generator)
+            self.backend.set_base_com_offset(offsets)
+            self.base_com_offset_m = offsets.to(self.device)
         self.reset()
 
     def resample_foot_friction(self):
@@ -78,6 +86,8 @@ class QuadrupedEnv:
             context["foot_ground_friction"] = self.foot_friction
         if self.base_mass_kg is not None:
             context["base_mass_kg"] = self.base_mass_kg
+        if self.base_com_offset_m is not None:
+            context["base_com_offset_m"] = self.base_com_offset_m
         return context
 
     def reset(self, env_ids=None, metrics=None):

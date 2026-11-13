@@ -112,6 +112,8 @@ def evaluate_standard(config, policy, seeds, backend='mujoco'):
                         result['foot_ground_friction'] = env.foot_friction[0].reshape(4, 3).tolist()
                     if env.base_mass_kg is not None:
                         result['base_mass_kg'] = env.base_mass_kg.item()
+                    if env.base_com_offset_m is not None:
+                        result['base_com_offset_m'] = env.base_com_offset_m[0].tolist()
                     results.append(result)
             finally:
                 env.close()
@@ -167,6 +169,8 @@ def evaluate(config, policy, seeds, steps, backend='mujoco'):
                     results[-1]['foot_ground_friction'] = env.foot_friction[0].reshape(4, 3).tolist()
                 if env.base_mass_kg is not None:
                     results[-1]['base_mass_kg'] = env.base_mass_kg.item()
+                if env.base_com_offset_m is not None:
+                    results[-1]['base_com_offset_m'] = env.base_com_offset_m[0].tolist()
             finally:
                 env.close()
     total = sum(item['steps'] for item in results)

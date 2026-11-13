@@ -270,6 +270,26 @@ class SuperMimicTests(unittest.TestCase):
         trainer.fit_model()
         trainer.improve_policy()
 
+    def test_base_com_offset_survives_reset_and_reaches_replay(self):
+        config = self.config
+        config.update(backend='mujoco', device='cpu', num_envs=1)
+        offset = torch.tensor([.01, -.02, .03])
+        config['domain_randomization'] = {'base_com': {
+            'enabled': True, 'offset_ranges_m': {
+                axis: [value, value] for axis, value in zip('xyz', offset.tolist())}}}
+        env = QuadrupedEnv(config, record_transitions=True)
+        self.addCleanup(env.close)
+        env.reset()
+        backend = env.backend
+        displacement = backend.model.body_ipos[backend.base] - backend.nominal_base_com
+        torch.testing.assert_close(torch.from_numpy(displacement).float(), offset)
+        trainer = Trainer(env, self.cfg)
+        self.assertEqual(trainer.model.input_norm.mean.numel(), 50)
+        trainer.collect()
+        seed = trainer.replay.sample_starts(3)
+        torch.testing.assert_close(seed['features'], offset.expand(3, -1))
+        torch.testing.assert_close(seed['context/base_com_offset_m'], seed['features'])
+
     def test_per_foot_friction_reaches_contacts_and_model_replay(self):
         config = self.config
         config.update(backend='mujoco', device='cpu', num_envs=1)
