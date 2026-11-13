@@ -108,6 +108,8 @@ def evaluate_standard(config, policy, seeds, backend='mujoco'):
                     }
                     if stop:
                         result.update(stop_metrics(velocities, positions, switch_step, env.dt, not fell))
+                    if env.foot_friction is not None:
+                        result['foot_ground_friction'] = env.foot_friction[0].reshape(4, 3).tolist()
                     results.append(result)
             finally:
                 env.close()
@@ -159,6 +161,8 @@ def evaluate(config, policy, seeds, steps, backend='mujoco'):
                                 'mean_velocity': torch.cat(velocities).mean(0).tolist(),
                                 'mean_reward': torch.cat(rewards).mean().item(),
                                 'action_std': torch.cat(actions).std(0, unbiased=False).mean().item()})
+                if env.foot_friction is not None:
+                    results[-1]['foot_ground_friction'] = env.foot_friction[0].reshape(4, 3).tolist()
             finally:
                 env.close()
     total = sum(item['steps'] for item in results)

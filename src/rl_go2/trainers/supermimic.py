@@ -160,7 +160,8 @@ def context_from(record):
 
 def critic_input(state, previous_action, context, features):
     return torch.cat((local_state(state, heading(state[:, 3:7])), previous_action, features,
-                      *(context[key].reshape(state.shape[0], -1).float() for key in sorted(context))), -1)
+                      *(context[key].reshape(state.shape[0], -1).float() for key in sorted(context)
+                        if key != 'foot_ground_friction')), -1)
 
 
 def imagined_step(env, model, actor, cfg, state, previous_action, context):
@@ -288,9 +289,10 @@ class Trainer:
             raise ValueError(f'Task must implement model-learning hooks: {required}')
         if not env.record_transitions:
             raise ValueError('SuperMimic requires record_transitions=True')
-        features = env.task.model_features(env.state, env.task.context())
+        context = env.model_context()
+        features = env.task.model_features(env.state, context)
         state = pack(env.state)
-        ci = critic_input(state, env.previous_action, env.task.context(), features)
+        ci = critic_input(state, env.previous_action, context, features)
         self.actor = Actor(env.observe().shape[-1], env.num_actions, cfg.actor_hidden,
                            env.config['robot']['action_clip']).to(env.device)
         self.model = DynamicsModel(features.shape[-1], cfg.model_hidden).to(env.device)
@@ -328,12 +330,14 @@ class Trainer:
 
     @torch.no_grad()
     def collect(self):
+        if self.env.foot_friction is not None:
+            self.env.resample_foot_friction()
         rewards, dones, driver_rewards = [], [], []
         task_metrics = {}
         for _ in range(self.cfg.collect_steps):
             obs = self.env.observe()
             self.actor.norm.update(obs)
-            features = self.env.task.model_features(self.env.state, self.env.task.context()).detach().clone()
+            features = self.env.task.model_features(self.env.state, self.env.model_context()).detach().clone()
             action = self.actor(obs)
             if self.driver is not None:
                 driver_action = self.driver(obs)

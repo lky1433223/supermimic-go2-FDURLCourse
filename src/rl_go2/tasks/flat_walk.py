@@ -101,6 +101,8 @@ class FlatWalkTask:
 
     def model_features(self, state, context):
         """Dynamics-only features; terrain tasks can provide local scans/physics parameters."""
+        if "foot_ground_friction" in context:
+            return context["foot_ground_friction"]
         return state.position.new_zeros((state.position.shape[0], 0))
 
     def advance_context(self, context, next_state):

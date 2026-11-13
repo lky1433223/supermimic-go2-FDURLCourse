@@ -1,5 +1,6 @@
 import torch
 
+from rl_go2.config import FOOT_NAMES, foot_friction_ranges
 from rl_go2.state import RobotState
 
 
@@ -26,6 +27,8 @@ class GenesisBackend:
             ),
             show_viewer=viewer,
         )
+        friction_enabled = foot_friction_ranges(config) is not None
+        planes = []
         for entity in config["scene"]["entities"]:
             kwargs = dict(pos=tuple(entity["position"]), quat=tuple(entity["rotation"]))
             if entity.get("robot"):
@@ -35,11 +38,34 @@ class GenesisBackend:
                     morph = gs.morphs.Plane(**kwargs)
                 else:
                     morph = gs.morphs.Box(size=tuple(entity["size"]), fixed=True, **kwargs)
-                self.scene.add_entity(morph, material=gs.materials.Rigid(friction=entity.get("friction", 0.8)))
+                surface = self.scene.add_entity(morph, material=gs.materials.Rigid(friction=entity.get("friction", 0.8)))
+                if friction_enabled and entity["type"] == "plane":
+                    planes.append(surface)
         self.scene.build(n_envs=self.num_envs)
+        self.friction_ratios = None
+        if friction_enabled:
+            # Genesis can reuse metadata from identical sphere meshes. Identify
+            # each foot by its calf link and the unique sphere collision geom.
+            feet = [[geom.idx for geom in self.robot.get_link(f"{name}_calf").geoms
+                     if geom.type == gs.GEOM_TYPE.SPHERE] for name in FOOT_NAMES]
+            if len(planes) != 1 or len(planes[0].geoms) != 1 or any(len(ids) != 1 for ids in feet):
+                raise ValueError("Foot friction requires one plane and one collision sphere on each Go2 calf")
+            self.friction_geom_ids = [ids[0] for ids in feet] + [planes[0].geoms[0].idx]
         self.joints = [self.robot.get_joint(name).dofs_idx_local[0] for name in config["robot"]["joint_names"]]
         self.base = self.robot.get_link(config["robot"]["base_link"])
         self.reset(torch.arange(self.num_envs, device=self.device))
+
+    def set_foot_ground_friction(self, base, multipliers):
+        # Genesis takes the per-component max of the two scaled geoms.
+        ground = base.amin(dim=0, keepdim=True)
+        sliding, torsional, rolling = torch.cat((base, ground)).to(self.device).unbind(dim=1)
+        solver = self.scene.rigid_solver
+        solver.set_geoms_friction(sliding.contiguous(), self.friction_geom_ids)
+        solver.set_geoms_friction_torsional(torsional.contiguous(), self.friction_geom_ids)
+        solver.set_geoms_friction_rolling(rolling.contiguous(), self.friction_geom_ids)
+        if self.friction_ratios is None:
+            self.friction_ratios = multipliers.to(self.device)[:, None].expand(-1, len(self.friction_geom_ids)).contiguous()
+            solver.set_geoms_friction_ratio(self.friction_ratios, self.friction_geom_ids)
 
     def read_state(self):
         # Getter tensors can alias engine buffers, so snapshots must own their storage.
@@ -51,6 +77,9 @@ class GenesisBackend:
         if env_ids.numel() == 0:
             return
         self.scene.reset(envs_idx=env_ids)
+        if self.friction_ratios is not None:
+            self.scene.rigid_solver.set_geoms_friction_ratio(
+                self.friction_ratios[env_ids], self.friction_geom_ids, env_ids)
         entity = next(e for e in self.config["scene"]["entities"] if e.get("robot"))
         # MJCF morph.pos composes with the XML root pose; canonical reset is absolute.
         position = torch.tensor(entity["position"], device=self.device)

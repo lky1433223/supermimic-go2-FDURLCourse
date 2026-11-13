@@ -7,6 +7,41 @@ import yaml
 
 from rl_go2.tasks import validate_task_name
 
+FOOT_NAMES = ("FR", "FL", "RR", "RL")
+FRICTION_TERMS = ("sliding", "torsional", "rolling")
+
+
+def foot_friction_ranges(config):
+    domain = config.get("domain_randomization", {})
+    if not isinstance(domain, dict):
+        raise ValueError("domain_randomization must be a mapping")
+    section = domain.get("foot_ground_friction", {})
+    if not isinstance(section, dict) or not isinstance(section.get("enabled", False), bool):
+        raise ValueError("foot_ground_friction must be a mapping with a boolean enabled flag")
+    if not section.get("enabled", False):
+        return None
+
+    def bounds(pair, label):
+        if (not isinstance(pair, (list, tuple)) or len(pair) != 2
+                or not all(isinstance(x, (int, float)) and not isinstance(x, bool)
+                           and math.isfinite(x) and x >= 0 for x in pair)
+                or pair[0] > pair[1]):
+            raise ValueError(f"{label} must be a finite nonnegative [min, max] pair")
+        return pair
+
+    feet = section.get("base_ranges", {})
+    if (not isinstance(feet, dict) or set(feet) != set(FOOT_NAMES)
+            or any(not isinstance(feet[name], dict) or set(feet[name]) != set(FRICTION_TERMS) for name in FOOT_NAMES)):
+        raise ValueError("base_ranges must specify sliding, torsional and rolling for FR, FL, RR and RL")
+    base = [[bounds(feet[name][term], f"{name}.{term}") for term in FRICTION_TERMS] for name in FOOT_NAMES]
+    ratio = bounds(section.get("env_multiplier_range"), "env_multiplier_range")
+    if min(foot[0][0] for foot in base) * ratio[0] < 0.01:
+        raise ValueError("Effective sliding friction must be at least 0.01 (Genesis contact floor)")
+    largest_base = max(pair[1] for foot in base for pair in foot)
+    if max(largest_base, ratio[1], largest_base * ratio[1]) > 3.4028234663852886e38:
+        raise ValueError("Friction bounds and their effective products must fit in float32")
+    return base, ratio
+
 
 def read_yaml(path):
     with Path(path).open() as stream:
@@ -95,4 +130,5 @@ def load_experiment(path):
     validate_task_name(task["name"])
     if not math.isfinite(task["episode_seconds"]) or task["episode_seconds"] <= 0:
         raise ValueError("episode_seconds must be finite and positive")
+    foot_friction_ranges(config)
     return config

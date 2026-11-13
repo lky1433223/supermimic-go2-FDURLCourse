@@ -8,6 +8,18 @@ num_envs: 4096
 seed: 1
 curriculum:
   name: none
+domain_randomization:
+  foot_ground_friction:
+    enabled: false
+    # Per-foot base bounds, sampled independently per real rollout.
+    # Sliding is dimensionless. Torsional and rolling are in meters.
+    base_ranges:
+      FR: {sliding: [0.8, 0.8], torsional: [0.02, 0.02], rolling: [0.01, 0.01]}
+      FL: {sliding: [0.8, 0.8], torsional: [0.02, 0.02], rolling: [0.01, 0.01]}
+      RR: {sliding: [0.8, 0.8], torsional: [0.02, 0.02], rolling: [0.01, 0.01]}
+      RL: {sliding: [0.8, 0.8], torsional: [0.02, 0.02], rolling: [0.01, 0.01]}
+    # One multiplier per environment, fixed across resets and rollouts.
+    env_multiplier_range: [1.0, 1.0]
 trainer:
   name: supermimic
   iterations: 40000

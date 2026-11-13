@@ -4,6 +4,7 @@ import math
 import torch
 
 from rl_go2.backends import make_backend
+from rl_go2.config import foot_friction_ranges
 from rl_go2.control import JointPositionControl
 from rl_go2.curriculum import make_curriculum
 from rl_go2.state import RobotState
@@ -44,7 +45,31 @@ class QuadrupedEnv:
         self.previous_action = torch.zeros(self.num_envs, self.num_actions, device=self.device)
         self.environment_steps = 0
         self.record_transitions = record_transitions
+        self.foot_friction = None
+        self.friction_bounds = None
+        ranges = foot_friction_ranges(config)
+        if ranges is not None:
+            base, ratio = ranges
+            self.friction_generator = torch.Generator().manual_seed(config["seed"])
+            self.friction_bounds = torch.tensor(base, dtype=torch.float32)
+            self.friction_multipliers = ratio[0] + (ratio[1] - ratio[0]) * torch.rand(
+                self.num_envs, generator=self.friction_generator)
+            self.resample_foot_friction()
         self.reset()
+
+    def resample_foot_friction(self):
+        if self.friction_bounds is None:
+            return
+        low, high = self.friction_bounds.unbind(-1)
+        base = low + (high - low) * torch.rand(low.shape, generator=self.friction_generator)
+        self.backend.set_foot_ground_friction(base, self.friction_multipliers)
+        self.foot_friction = (self.friction_multipliers[:, None, None] * base).flatten(1).to(self.device)
+
+    def model_context(self):
+        context = self.task.context()
+        if self.foot_friction is not None:
+            context["foot_ground_friction"] = self.foot_friction
+        return context
 
     def reset(self, env_ids=None, metrics=None):
         if env_ids is None:
@@ -68,7 +93,7 @@ class QuadrupedEnv:
         old_state = self.state
         if base_force is None:
             base_force = self.task.external_force(self.state, self.episode_length_buf)
-        context = ({name: value.detach().clone() for name, value in self.task.context().items()}
+        context = ({name: value.detach().clone() for name, value in self.model_context().items()}
                    if self.record_transitions else None)
         if base_force is not None:
             base_force = base_force.detach().to(self.device)

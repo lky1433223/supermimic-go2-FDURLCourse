@@ -248,6 +248,48 @@ class SuperMimicTests(unittest.TestCase):
         gradients = torch.autograd.grad(expected[0].sum(), (action, previous), allow_unused=True)
         self.assertIsNone(gradients[1])
 
+    def test_per_foot_friction_reaches_contacts_and_model_replay(self):
+        config = self.config
+        config.update(backend='mujoco', device='cpu', num_envs=1)
+        feet = ('FR', 'FL', 'RR', 'RL')
+        base = torch.tensor([[.4, .01, .002], [.5, .02, .003], [.6, .03, .004], [.7, .04, .005]])
+        config['domain_randomization'] = {'foot_ground_friction': {
+            'enabled': True, 'env_multiplier_range': [.75, .75],
+            'base_ranges': {
+                foot: {term: [value, value] for term, value in zip(
+                    ('sliding', 'torsional', 'rolling'), row.tolist())}
+                for foot, row in zip(feet, base)}}}
+        env = QuadrupedEnv(config, record_transitions=True)
+        self.addCleanup(env.close)
+        expected = base * .75
+        trainer = Trainer(env, self.cfg)
+        self.assertEqual(trainer.model.input_norm.mean.numel(), 59)
+        self.assertEqual(env.observe().shape[-1], 45)
+        trainer.collect()
+        seed = trainer.replay.sample_starts(3)
+        torch.testing.assert_close(seed['features'], expected.flatten().expand(3, -1))
+        torch.testing.assert_close(seed['context/foot_ground_friction'], seed['features'])
+        trainer.fit_model()
+        trainer.improve_policy()
+
+        env.reset()
+        backend = env.backend
+        ground = backend.model.geom('ground').id
+        foot_rows = dict(zip(backend.foot_ids, expected))
+        seen = set()
+        for _ in range(20):
+            env.step(torch.zeros(1, 12))
+            for contact in backend.data.contact:
+                if ground not in contact.geom:
+                    continue
+                foot = next((geom for geom in contact.geom if geom in foot_rows), None)
+                if foot is None:
+                    continue
+                self.assertEqual(contact.dim, 6)
+                torch.testing.assert_close(torch.tensor(contact.friction[[0, 2, 3]], dtype=base.dtype), foot_rows[foot])
+                seen.add(foot)
+        self.assertEqual(seen, set(foot_rows))
+
     def test_data_driver_never_changes_or_exports_actor(self):
         with tempfile.TemporaryDirectory() as directory:
             driver = torch.nn.Linear(45, 12)
