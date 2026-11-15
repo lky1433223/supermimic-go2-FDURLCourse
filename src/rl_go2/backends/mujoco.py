@@ -108,7 +108,8 @@ class MujocoBackend:
         robot = next(e for e in self.config["scene"]["entities"] if e.get("robot"))
         self.data.qpos[:3] = robot["position"]
         self.data.qpos[3:7] = robot["rotation"]
-        self.data.qpos[self.q_indices] = self.config["robot"]["default_joint_positions"]
+        spec = self.config["robot"]
+        self.data.qpos[self.q_indices] = spec.get("reset_joint_positions", spec["default_joint_positions"])
         mujoco.mj_forward(self.model, self.data)
 
     def step(self, torque, *, base_force=None):

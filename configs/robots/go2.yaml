@@ -14,6 +14,8 @@ joint_names:
   - RL_thigh_joint
   - RL_calf_joint
 default_joint_positions: [0, 0.8, -1.5, 0, 0.8, -1.5, 0, 1.0, -1.5, 0, 1.0, -1.5]
+# Unitree Go2 RL initial pose in joint_names order (FR, FL, RR, RL), in radians.
+reset_joint_positions: [-0.1, 0.8, -1.5, 0.1, 0.8, -1.5, -0.1, 1.0, -1.5, 0.1, 1.0, -1.5]
 kp: 20.0
 kd: 0.5
 torque_limits: [23.7, 23.7, 45.43, 23.7, 23.7, 45.43, 23.7, 23.7, 45.43, 23.7, 23.7, 45.43]

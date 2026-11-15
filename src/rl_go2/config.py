@@ -155,6 +155,11 @@ def load_experiment(path):
     for key in ("default_joint_positions", "torque_limits"):
         if len(robot[key]) != len(names):
             raise ValueError(f"{key} length must match joint_names")
+    if "reset_joint_positions" in robot:
+        positions = robot["reset_joint_positions"]
+        if (not isinstance(positions, list) or len(positions) != len(names)
+                or not all(type(angle) in (int, float) and math.isfinite(angle) for angle in positions)):
+            raise ValueError("reset_joint_positions must provide one finite angle per joint in joint_names order")
     if min(robot["torque_limits"]) <= 0 or robot["kp"] < 0 or robot["kd"] < 0:
         raise ValueError("Invalid PD gains or torque limits")
     decimation = robot["control_decimation"]

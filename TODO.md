@@ -49,3 +49,8 @@
 
 - [ ] 改善策略的整体姿态。
   - 回看标准评测中直行和转向的录像，记录姿态不佳的工况和具体表现。
+
+- [ ] 对比 Go2 的初始髋关节角。旧配置四条腿均为 0 rad，新的 reset 默认值采用 [Unitree 官方 RL Gym 配方](https://github.com/unitreerobotics/unitree_rl_gym/blob/main/legged_gym/envs/go2/go2_config.py#L284)的左侧 +0.1 rad、右侧 −0.1 rad。
+  - 用同一份旧策略只改 reset 的髋关节角，对照左右脚间距和起步表现。复测沿用旧权重对应的观测和 PD 参考角。
+
+- [ ] 在新训练中对照 Unitree 官方零动作参考姿态。将 `default_joint_positions` 的左髋设为 +0.1 rad、右髋设为 −0.1 rad，用于策略观测和 PD 目标角。评测旧权重时沿用训练产物保存的参考角。

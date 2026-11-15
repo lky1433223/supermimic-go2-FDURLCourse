@@ -102,7 +102,9 @@ class GenesisBackend:
         quaternion = torch.tensor(entity["rotation"], device=self.device, dtype=torch.float32)
         self.robot.set_pos(position.expand(len(env_ids), -1), envs_idx=env_ids)
         self.robot.set_quat(quaternion.expand(len(env_ids), -1), envs_idx=env_ids)
-        positions = torch.tensor(self.config["robot"]["default_joint_positions"], device=self.device)
+        robot = self.config["robot"]
+        positions = torch.tensor(robot.get("reset_joint_positions", robot["default_joint_positions"]),
+                                 device=self.device)
         self.robot.set_dofs_position(positions.expand(len(env_ids), -1), self.joints, envs_idx=env_ids)
 
     def step(self, torque, *, base_force=None):

@@ -289,7 +289,8 @@ class FrameworkTests(unittest.TestCase):
         env = QuadrupedEnv(config)
         try:
             torch.testing.assert_close(env.state.position[0], torch.tensor([0., 0., 0.42]))
-            torch.testing.assert_close(env.state.joint_position[0], env.controller.default)
+            torch.testing.assert_close(env.state.joint_position[0],
+                                       torch.tensor(config["robot"]["reset_joint_positions"]))
             with tempfile.TemporaryDirectory() as tmp:
                 output = Path(tmp) / "run"
                 save_run_spec(config, output)
@@ -316,7 +317,8 @@ class FrameworkTests(unittest.TestCase):
         try:
             torch.testing.assert_close(env.state.position, torch.tensor([[0., 0., 0.42]]).expand(2, -1))
             torch.testing.assert_close(env.state.quaternion, torch.tensor([[1., 0., 0., 0.]]).expand(2, -1))
-            torch.testing.assert_close(env.state.joint_position, env.controller.default.expand(2, -1))
+            expected = torch.tensor(env.config["robot"]["reset_joint_positions"], device=env.device)
+            torch.testing.assert_close(env.state.joint_position, expected.expand(2, -1))
             force = torch.tensor([[10., 0., 0.], [0., 0., 0.]])
             env.step(torch.zeros(2, 12), base_force=force)
             self.assertGreater(float(env.state.linear_velocity[0, 0]), float(env.state.linear_velocity[1, 0]))
