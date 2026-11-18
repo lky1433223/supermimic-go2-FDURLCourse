@@ -313,6 +313,10 @@ class FrameworkTests(unittest.TestCase):
         config = deepcopy(self.config)
         config.update(backend="genesis", device="cpu", num_envs=2)
         config["task"]["episode_seconds"] = 0.04
+        config["domain_randomization"] = {"foot_ground_friction": {
+            "enabled": True, "env_multiplier_range": [0.75, 1.25], "switch_interval_seconds": [0.04, 0.04],
+            "base_ranges": {foot: {"sliding": [0.8, 0.8], "torsional": [0.02, 0.02], "rolling": [0.01, 0.01]}
+                            for foot in ("FR", "FL", "RR", "RL")}}}
         env = QuadrupedEnv(config, record_transitions=True)
         try:
             torch.testing.assert_close(env.state.position, torch.tensor([[0., 0., 0.42]]).expand(2, -1))
@@ -320,7 +324,14 @@ class FrameworkTests(unittest.TestCase):
             expected = torch.tensor(env.config["robot"]["reset_joint_positions"], device=env.device)
             torch.testing.assert_close(env.state.joint_position, expected.expand(2, -1))
             force = torch.tensor([[10., 0., 0.], [0., 0., 0.]])
+            env.friction_steps_left[0] = 1
+            friction = env.foot_friction.clone()
             env.step(torch.zeros(2, 12), base_force=force)
+            self.assertFalse(torch.equal(env.foot_friction[0], friction[0]))
+            torch.testing.assert_close(env.foot_friction[1], friction[1])
+            backend = env.backend
+            ratios = backend.scene.rigid_solver.get_geoms_friction_ratio(backend.friction_geom_ids)
+            torch.testing.assert_close(ratios, (env.foot_friction[:, :1] / 0.8).expand_as(ratios))
             self.assertGreater(float(env.state.linear_velocity[0, 0]), float(env.state.linear_velocity[1, 0]))
             other = env.state.clone()
             env.reset(torch.tensor([0]))

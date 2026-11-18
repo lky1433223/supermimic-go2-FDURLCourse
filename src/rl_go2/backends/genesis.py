@@ -71,6 +71,11 @@ class GenesisBackend:
             self.friction_ratios = multipliers.to(self.device)[:, None].expand(-1, len(self.friction_geom_ids)).contiguous()
             solver.set_geoms_friction_ratio(self.friction_ratios, self.friction_geom_ids)
 
+    def set_foot_friction_multipliers(self, multipliers, env_ids):
+        ratios = multipliers[:, None].expand(-1, len(self.friction_geom_ids)).contiguous()
+        self.scene.rigid_solver.set_geoms_friction_ratio(ratios, self.friction_geom_ids, env_ids)
+        self.friction_ratios[env_ids] = ratios
+
     def set_base_com_offset(self, offsets):
         nominal = offsets.new_tensor(self.base.desc.inertial_pos)
         com = (nominal + offsets).to(self.device)

@@ -332,6 +332,33 @@ class SuperMimicTests(unittest.TestCase):
                 seen.add(foot)
         self.assertEqual(seen, set(foot_rows))
 
+    def test_timed_friction_switch_preserves_transition_and_advances_imagination(self):
+        config = load_experiment(ROOT / 'configs/experiments/flat_supermimic_bootstrap.yaml')
+        config.update(backend='mujoco', device='cpu', num_envs=1)
+        config['domain_randomization']['foot_ground_friction'].update(
+            enabled=True, env_multiplier_range=[.75, 1.25], switch_interval_seconds=[.04, .04])
+        env = QuadrupedEnv(config, record_transitions=True)
+        self.addCleanup(env.close)
+        initial = env.foot_friction.clone()
+        action = torch.zeros(1, 12)
+        env.step(action)
+        torch.testing.assert_close(env.foot_friction, initial)
+        _, _, _, extras = env.step(action)
+        context = extras['transition'].context
+        torch.testing.assert_close(context['foot_ground_friction'], initial)
+        self.assertEqual(context['friction_steps_left'].item(), 1)
+        self.assertEqual(env.friction_steps_left.item(), 2)
+        self.assertFalse(torch.equal(env.foot_friction, initial))
+        actual = env.backend.model.geom_friction[env.backend.foot_ids]
+        torch.testing.assert_close(torch.tensor(actual).float(), env.foot_friction.reshape(4, 3))
+        imagined = env.advance_context(context, env.state)
+        self.assertEqual(imagined['friction_steps_left'].item(), 2)
+        self.assertFalse(torch.equal(imagined['foot_ground_friction'], initial))
+        trainer = Trainer(env, self.cfg)
+        trainer.collect()
+        self.assertTrue(torch.isfinite(torch.tensor(trainer.fit_model())))
+        trainer.improve_policy()
+
     def test_data_driver_never_changes_or_exports_actor(self):
         with tempfile.TemporaryDirectory() as directory:
             driver = torch.nn.Linear(45, 12)

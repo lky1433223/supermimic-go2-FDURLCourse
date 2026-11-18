@@ -85,7 +85,11 @@ class MujocoBackend:
                           tensor(self.data.qvel[self.v_indices]))
 
     def set_foot_ground_friction(self, base, multipliers):
+        self.foot_friction_base = base
         self.model.geom_friction[self.foot_ids] = (base * multipliers[0]).numpy()
+
+    def set_foot_friction_multipliers(self, multipliers, env_ids):
+        self.model.geom_friction[self.foot_ids] = (self.foot_friction_base * multipliers[0]).numpy()
 
     def set_base_com_offset(self, offsets):
         self.model.body_ipos[self.base] = self.nominal_base_com + offsets[0].numpy()

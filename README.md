@@ -5,29 +5,37 @@
 ## 输出目录约定
 
 今后每次训练使用独立的 `output/<实验目录>/`，该目录整体被 Git 忽略。
-不传 `--output` 时，训练入口自动生成 `output/<实验配置名>-seed<种子>-<时间戳>/`；时间戳使用 Asia/Shanghai，精确到微秒。
-也可以显式指定 `--output output/<自定义实验名>`，已有目录会被拒绝，避免覆盖。
+训练使用 `scripts/train.py`。省略 `--output` 时，目录名由配置名、训练预算、Git 短提交号和北京时间组成。
 
 ```text
-output/
-  <实验目录>/
+output/<实验目录>/
+  launch.sh
+  launch-config.json
+  commit.txt
+  train.log
+  exit-code
+  training/
     config.json
     policy_spec.json
     policy.pt
     model_*.pt
-    events.out.tfevents.*
-    evaluation/
-      <评测类型>-<时间戳>/
-        assessment.json
-        <回放视频>.mp4
+  evaluation/iteration-<轮次>/<协议>-<后端>-<机器>-<时间戳>/
+    eval-config.json
+    summary.json
+    nominal/
+      assessment.json
+      replay.mp4
 ```
 
-`rl-go2 evaluate`、`evaluate_push.py` 和 `evaluate_tracking.py` 默认把报告和视频写入所选训练目录的 `evaluation/` 子目录；显式 `--output` 仍可覆盖位置。
+评测统一使用 `scripts/evaluate.py`，支持 `standard`、`friction-switch` 和 `rollout`。
+传入 `--config` 可读取已解析的评测 JSON，`--condition` 给该工况命名。只有导出策略时，用 `--iteration` 标注实际轮次。
+三个协议都可用 `--viewer` 实时查看，或在 MuJoCo 下加 `--video` 保存同一次仿真的回放。
+ICC 无窗口录制使用 `MUJOCO_GL=egl`。显式 `--output` 指向本次评测的新目录。
 
 ### 标准速度跟踪评测
 
 ```bash
-uv run --extra train python scripts/evaluate_tracking.py --run-dir output/flat-supermimic-guided-001 --protocol standard
+uv run --extra train python scripts/evaluate.py --run-dir output/flat-supermimic-guided-001 --protocol standard
 ```
 
 每个种子跑 27 项，横向速度指令固定为 0。速度单位为 m/s，转向单位为 rad/s。
@@ -44,6 +52,14 @@ uv run --extra train python scripts/evaluate_tracking.py --run-dir output/flat-s
 每项从默认姿态开始，最多运行 20 秒。摔倒时记录时间并结束该项，继续后续工况。
 报告包含全程及去掉前 2 秒后的速度 RMSE，以及走停工况的稳定用时和末 2 秒位移。
 标准协议默认用种子 1，可用 `--seeds` 对整套工况复测。
+
+摩擦切换对照使用 `python scripts/evaluate.py --protocol friction-switch --run-dir <训练目录>`。
+两组都以 0.5 m/s 直行，对照组保持滑动摩擦 0.8，切换组每 5 秒依次使用 0.8、0.4、0.8。
+报告记录各阶段实际接触摩擦、跟踪误差和摔倒时间。
+训练时可在启用 `foot_ground_friction` 后设置 `env_multiplier_range: [0.75, 1.25]` 和
+`switch_interval_seconds: [2.0, 5.0]`。启用定时切换时四脚基础范围须为固定值，
+各环境独立重抽倍率，真实采样和想象 rollout 使用相同的倍率与时长分布。
+
 训练启动时会打印绝对输出路径。历史 `runs/` 及当前已有产物保持原位，仍被忽略，不自动迁移。
 
 ## 环境与资产
@@ -103,12 +119,12 @@ SuperMimic 已接入同一环境，使用 replay 多步拟合和模型内可微�
 ## 检查框架（不训练）
 
 ```bash
-uv run --extra train rl-go2 validate
+uv run --extra train python scripts/check_env.py validate
 uv run --extra train python -m unittest discover -s tests -v
 # 包含 Genesis 初始位姿、局部重置和超时重置的集成测试
 RL_GO2_TEST_GENESIS=1 uv run --extra train python -m unittest discover -s tests -v
-uv run --extra train rl-go2 smoke --backend mujoco --num-envs 1 --device cpu --steps 16 --check-runner
-uv run --extra train rl-go2 smoke --backend genesis --num-envs 2 --device cpu --steps 4 --check-runner
+uv run --extra train python scripts/check_env.py smoke --backend mujoco --num-envs 1 --device cpu --steps 16 --check-runner
+uv run --extra train python scripts/check_env.py smoke --backend genesis --num-envs 2 --device cpu --steps 4 --check-runner
 ```
 
 smoke 使用零动作，或通过 `--check-runner` 初始化随机 PPO 策略并前向采样；不会调用 learn/update。
@@ -120,7 +136,7 @@ Menagerie 模型的零关节角中性姿态会触发 Genesis 的 qpos0 限位提
 以下命令会开始训练。默认奖励与参数是起点，需要通过正式实验验证。
 
 ```bash
-uv run --extra train rl-go2 train --device cuda --num-envs 4096 --iterations 1000 --output output/flat-ppo-001
+uv run --extra train python scripts/train.py --device cuda --num-envs 4096 --iterations 1000 --output output/flat-ppo-001
 uv run --extra train tensorboard --logdir output
 ```
 
@@ -131,13 +147,14 @@ CPU 开发调试可用 `--device cpu --num-envs 4`。输出目录须为新目录
 
 ```bash
 # 已训练策略的 sim2sim rollout，默认无窗口
-uv run --extra train rl-go2 evaluate --run-dir output/flat-ppo-001 --backend mujoco --steps 1000
+uv run --extra train python scripts/evaluate.py --protocol rollout --run-dir output/flat-ppo-001 --backend mujoco --steps 1000
 # 在训练后端评估同一策略
-uv run --extra train rl-go2 evaluate --run-dir output/flat-ppo-001 --backend genesis --steps 1000
+uv run --extra train python scripts/evaluate.py --protocol rollout --run-dir output/flat-ppo-001 --backend genesis --steps 1000
 ```
 
 评估使用固定种子和固定难度，但当前尚无保存初始状态/命令序列的正式基准。
-需要窗口时加 `--viewer`；macOS MuJoCo 被动 Viewer 需使用其 `mjpython` 启动器运行 `-m rl_go2.cli`。
+需要窗口时加 `--viewer`。macOS 的 MuJoCo 窗口用 `mjpython` 启动 `scripts/evaluate.py`。
+如果 uv Python 的 `mjpython` 找不到 `libpython3.12.dylib`，将基础 Python 的 `lib/` 加入 `DYLD_FALLBACK_LIBRARY_PATH`。
 
 接口参考：[Genesis](https://genesis-world.readthedocs.io/en/latest/user_guide/overview/installation.html)、
 [RSL-RL](https://github.com/leggedrobotics/rsl_rl)、[MuJoCo Python](https://mujoco.readthedocs.io/en/stable/python.html)。
@@ -166,8 +183,8 @@ uv run --extra train rl-go2 evaluate --run-dir output/flat-ppo-001 --backend gen
 本机结果保存在 Git 忽略的 `runs/flat-ppo-local-check-001/`：`verification.json` 是验证报告，`train.log` 是训练日志，`policy.pt` 是导出策略，`mujoco-rollout.mp4` 是 6 秒回放。
 
 ```bash
-OMP_NUM_THREADS=2 uv run --extra train --extra unitree rl-go2 train --device cpu --num-envs 4 --iterations 5 --output output/flat-ppo-local-check-002
-uv run --extra train --extra unitree rl-go2 evaluate --run-dir output/flat-ppo-local-check-002 --backend mujoco --steps 1000
+OMP_NUM_THREADS=2 uv run --extra train --extra unitree python scripts/train.py --device cpu --num-envs 4 --iterations 5 --output output/flat-ppo-local-check-002
+uv run --extra train --extra unitree python scripts/evaluate.py --protocol rollout --run-dir output/flat-ppo-local-check-002 --backend mujoco --steps 1000
 ```
 
 ## ICC 训练及第 700 轮 sim2sim 评测
@@ -207,7 +224,7 @@ uv run --extra train --extra unitree rl-go2 evaluate --run-dir output/flat-ppo-l
 用完成的平地 checkpoint 初始化 actor、critic 及其归一化状态，重新初始化优化器、迭代和课程。会检查关节顺序、控制参数、时间步和观测布局是否一致；学习率从 0.0003 开始。关闭初始 episode 计数随机化，避免初次落地时触发本应延后的推力。
 
 ```bash
-uv run --extra train rl-go2 train --config configs/experiments/push_ppo.yaml --device cuda --num-envs 4096 --iterations 1000 --init-checkpoint output/flat-ppo-icc-gpu2-001/model_999.pt --output output/push-ppo-001
+uv run --extra train python scripts/train.py --config configs/experiments/push_ppo.yaml --device cuda --num-envs 4096 --iterations 1000 --init-checkpoint output/flat-ppo-icc-gpu2-001/training/model_999.pt --output output/push-ppo-001
 ```
 
 受推基线使用已完成的 1000 轮平地策略。在 MuJoCo 中固定 0.3/0.5/0.7 m/s 命令，各次测试在第 3 秒施力 0.2 秒；每个非零强度分别测试世界坐标四个方向，共 12 个条件。每次最多 8 秒，摔倒立即结束。
@@ -222,11 +239,7 @@ uv run --extra train rl-go2 train --config configs/experiments/push_ppo.yaml --d
 | 80 N | 9 / 12 |
 | 100 N | 9 / 12 |
 
-这是有限固定条件的基线，不是总体成功率估计。报告和视频保存在本机忽略目录 `runs/push-baseline-001/`。对训练后的策略使用同一协议比较：
-
-```bash
-uv run --extra train python scripts/evaluate_push.py --run-dir output/push-ppo-001 --output output/push-evaluation-001 --video
-```
+这是有限固定条件的基线，不是总体成功率估计。报告和视频保存在本机忽略目录 `runs/push-baseline-001/`。
 
 同一基线已在 ICC CPU 复测，各强度下摔倒计数一致，本机副本为 `runs/push-baseline-001/icc-assessment.json`。
 已在 ICC 的 GPU 2 启动 4096 环境、1000 轮抗扰动训练，结果目录 `/home/lky/RL-Go2/runs/push-ppo-icc-gpu2-001`，tmux 会话为 `rl-go2-push-gpu2`。
@@ -286,15 +299,13 @@ uv run --extra train --extra unitree python -m unittest discover -s tests -v
 uv sync --extra train --locked
 # 需与当前 Go2 的关节顺序、PD、动作缩放和 45 维观测兼容的 TorchScript 策略。
 # 本机已验证 driver 的绝对路径见下方说明；仓库不附带教师权重。
-uv run --extra train rl-go2 train --config configs/experiments/flat_supermimic_guided.yaml \
+uv run --extra train python scripts/train.py --config configs/experiments/flat_supermimic_guided.yaml \
   --driver-policy /absolute/path/to/compatible-go2-policy.pt --output output/flat-supermimic-guided-001
-uv run --extra train python scripts/evaluate_tracking.py --run-dir output/flat-supermimic-guided-001 \
-  --output output/flat-supermimic-guided-001/tracking-validation.json --require-tracking
-uv run --extra train python scripts/evaluate_tracking.py --run-dir output/flat-supermimic-guided-001 \
-  --seeds 201 202 203 204 205 206 207 208 209 210 \
-  --output output/flat-supermimic-guided-001/tracking-heldout.json --require-tracking
+uv run --extra train python scripts/evaluate.py --run-dir output/flat-supermimic-guided-001 --protocol standard
+uv run --extra train python scripts/evaluate.py --run-dir output/flat-supermimic-guided-001 --protocol standard \
+  --seeds 201 202 203 204 205 206 207 208 209 210
 # 导出策略推理不需要 --driver-policy，也不会读取教师模型。
-uv run --extra train rl-go2 evaluate --run-dir output/flat-supermimic-guided-001 --backend mujoco --steps 1000
+uv run --extra train python scripts/evaluate.py --protocol rollout --run-dir output/flat-supermimic-guided-001 --backend mujoco --steps 1000
 ```
 
 已验证配置为 Genesis CPU、32 环境、900 轮：16 个环境由当前 actor 采集，16 个由 driver 采集。
@@ -319,11 +330,9 @@ GPU 可覆盖 `--device cuda --num-envs ...`，但不同规模尚未重新调优
 真实仿真、replay 和 imagined rollout 均使用裁剪后的动作；历史配置没有限位字段时保留原行为。
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 uv run --extra train rl-go2 train \
+CUDA_VISIBLE_DEVICES=1 uv run --extra train python scripts/train.py \
   --config configs/experiments/flat_supermimic_bootstrap.yaml --output output/flat-supermimic-bootstrap-001
-uv run --extra train python scripts/evaluate_tracking.py --run-dir output/flat-supermimic-bootstrap-001 \
-  --steps 3000 --seeds 1 2 3 4 5 \
-  --output output/flat-supermimic-bootstrap-001/evaluation/tracking-mujoco.json --require-tracking
+uv run --extra train python scripts/evaluate.py --run-dir output/flat-supermimic-bootstrap-001 --protocol standard
 ```
 
 2026-11-02 ICC GPU 1 的一次完整训练使用旧调度（300 轮世界模型预热、每轮 2 个模型 batch、
@@ -359,7 +368,7 @@ vx/vy/yaw RMSE 分别为 0.0586 m/s、0.0179 m/s、0.0404 rad/s。
 冻结早停选择后，新种子 201–210 共 200 秒独立测试，前进/横向/转向 RMSE 为
 0.0783 m/s、0.0248 m/s、0.0512 rad/s，零摔倒。
 训练后端 Genesis 单环境种子 1 的 20 秒独立检查同样通过；前进/转向 RMSE 为 0.0558 m/s 和 0.0157 rad/s。
-验收标准在比较前固定为零摔倒，以及三个聚合 RMSE 各小于 0.15（对应 SI 单位）；脚本保存逐种子结果，失败时 `--require-tracking` 返回非零。
+历史验收标准为零摔倒，且三个聚合 RMSE 各小于 0.15（对应 SI 单位）。逐种子数据见历史评测结果。
 
 范围是平地前进命令 0.2–0.8 m/s、转向命令 ±0.5 rad/s，每 4 秒重采样；横向命令固定为 0。
 横向 RMSE 衡量漂移，不代表已验证侧向行走。尚未验证复杂地形、外力扰动或真机部署。

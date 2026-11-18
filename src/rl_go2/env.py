@@ -4,7 +4,7 @@ import math
 import torch
 
 from rl_go2.backends import make_backend
-from rl_go2.config import base_com_offset_ranges, base_mass_scale_range, foot_friction_ranges
+from rl_go2.config import base_com_offset_ranges, base_mass_scale_range, foot_friction_ranges, foot_friction_switch_seconds
 from rl_go2.control import JointPositionControl
 from rl_go2.curriculum import make_curriculum
 from rl_go2.state import RobotState
@@ -47,6 +47,7 @@ class QuadrupedEnv:
         self.record_transitions = record_transitions
         self.foot_friction = None
         self.friction_bounds = None
+        self.friction_switch_steps = None
         ranges = foot_friction_ranges(config)
         if ranges is not None:
             base, ratio = ranges
@@ -55,6 +56,12 @@ class QuadrupedEnv:
             self.friction_multipliers = ratio[0] + (ratio[1] - ratio[0]) * torch.rand(
                 self.num_envs, generator=self.friction_generator)
             self.resample_foot_friction()
+            interval = foot_friction_switch_seconds(config)
+            if interval is not None:
+                self.friction_switch_steps = tuple(max(1, round(seconds / self.dt)) for seconds in interval)
+                self.friction_ratio_range = ratio
+                self.friction_switch_base = self.friction_bounds[..., 0].flatten().to(self.device)
+                self.friction_steps_left = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.base_mass_kg = None
         mass_range = base_mass_scale_range(config)
         if mass_range is not None:
@@ -73,17 +80,49 @@ class QuadrupedEnv:
         self.reset()
 
     def resample_foot_friction(self):
-        if self.friction_bounds is None:
+        if self.friction_bounds is None or self.friction_switch_steps is not None:
             return
         low, high = self.friction_bounds.unbind(-1)
         base = low + (high - low) * torch.rand(low.shape, generator=self.friction_generator)
         self.backend.set_foot_ground_friction(base, self.friction_multipliers)
         self.foot_friction = (self.friction_multipliers[:, None, None] * base).flatten(1).to(self.device)
 
+    def sample_friction_segment(self, count, device, generator=None):
+        low, high = self.friction_ratio_range
+        ratio = low + (high - low) * torch.rand(count, device=device, generator=generator)
+        first, last = self.friction_switch_steps
+        steps = torch.randint(first, last + 1, (count,), device=device, generator=generator)
+        return ratio, steps
+
+    def reset_friction_segment(self, env_ids):
+        if not env_ids.numel():
+            return
+        ratio, steps = self.sample_friction_segment(env_ids.numel(), "cpu", self.friction_generator)
+        ratio = ratio.to(self.device)
+        self.backend.set_foot_friction_multipliers(ratio, env_ids)
+        self.foot_friction[env_ids] = ratio[:, None] * self.friction_switch_base
+        self.friction_steps_left[env_ids] = steps.to(self.device)
+
+    def advance_context(self, context, state):
+        context = self.task.advance_context(context, state)
+        if self.friction_switch_steps is None:
+            return context
+        left = context["friction_steps_left"] - 1
+        ratio, steps = self.sample_friction_segment(left.shape[0], left.device)
+        changed = left <= 0
+        return {
+            **context,
+            "friction_steps_left": torch.where(changed, steps, left),
+            "foot_ground_friction": torch.where(changed[:, None], ratio[:, None] * self.friction_switch_base,
+                                                context["foot_ground_friction"]),
+        }
+
     def model_context(self):
         context = self.task.context()
         if self.foot_friction is not None:
             context["foot_ground_friction"] = self.foot_friction
+        if self.friction_switch_steps is not None:
+            context["friction_steps_left"] = self.friction_steps_left
         if self.base_mass_kg is not None:
             context["base_mass_kg"] = self.base_mass_kg
         if self.base_com_offset_m is not None:
@@ -95,6 +134,8 @@ class QuadrupedEnv:
             env_ids = torch.arange(self.num_envs, device=self.device)
         updates = self.curriculum.on_reset(env_ids, environment_steps=self.environment_steps, metrics=metrics or {})
         self.backend.reset(env_ids)
+        if self.friction_switch_steps is not None:
+            self.reset_friction_segment(env_ids)
         self.state = self.backend.read_state()
         self.task.reset(env_ids, self.state, updates)
         self.episode_length_buf[env_ids] = 0
@@ -145,6 +186,10 @@ class QuadrupedEnv:
                                                context, terminated.clone(), truncated.clone(),
                                                old_action, torque.detach().clone())
         done_ids = done.nonzero(as_tuple=False).flatten()
+        if self.friction_switch_steps is not None:
+            self.friction_steps_left.sub_(1)
+            switch_ids = ((self.friction_steps_left <= 0) & ~done).nonzero(as_tuple=False).flatten()
+            self.reset_friction_segment(switch_ids)
         if done_ids.numel():
             extras["final_env_ids"] = done_ids
             extras["final_observation"] = self.observe()[done_ids].clone()

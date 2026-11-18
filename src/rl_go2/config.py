@@ -47,6 +47,20 @@ def base_mass_scale_range(config):
     return bounds
 
 
+def foot_friction_switch_seconds(config):
+    friction = config.get("domain_randomization", {}).get("foot_ground_friction", {})
+    interval = friction.get("switch_interval_seconds")
+    if not friction.get("enabled") or interval is None:
+        return None
+    if (not isinstance(interval, (list, tuple)) or len(interval) != 2
+            or not all(type(value) in (int, float) and math.isfinite(value) for value in interval)
+            or not 0 < interval[0] <= interval[1]):
+        raise ValueError("switch_interval_seconds must be a positive ordered pair")
+    if any(lo != hi for foot in friction["base_ranges"].values() for lo, hi in foot.values()):
+        raise ValueError("Timed friction switching requires fixed per-foot base_ranges")
+    return interval
+
+
 def foot_friction_ranges(config):
     domain = config.get("domain_randomization", {})
     if not isinstance(domain, dict):
@@ -76,6 +90,7 @@ def foot_friction_ranges(config):
     largest_base = max(pair[1] for foot in base for pair in foot)
     if max(largest_base, ratio[1], largest_base * ratio[1]) > 3.4028234663852886e38:
         raise ValueError("Friction bounds and their effective products must fit in float32")
+    foot_friction_switch_seconds(config)
     return base, ratio
 
 

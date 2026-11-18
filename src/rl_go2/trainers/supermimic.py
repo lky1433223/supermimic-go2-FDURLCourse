@@ -207,7 +207,7 @@ def imagined_rollout(env, model, actor, critic, seed, cfg, *, step=None, returns
         continuations.append(continuation)
         if cfg.bootstrap_weight:
             inputs.append(critic_obs)
-        context = env.task.advance_context(context, unpack(state))
+        context = env.advance_context(context, unpack(state))
         previous_action = action
     objective, survival = returns(rewards, continuations, cfg.gamma)
     if cfg.bootstrap_weight:
