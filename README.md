@@ -19,7 +19,7 @@ output/<实验目录>/
     policy_spec.json
     policy.pt
     model_*.pt
-  evaluation/iteration-<轮次>/<协议>-<后端>-<机器>-<时间戳>/
+  evaluation/iteration-<轮次>/<task>-<后端>-<机器>-<时间戳>/
     eval-config.json
     summary.json
     nominal/
@@ -27,15 +27,16 @@ output/<实验目录>/
       replay.mp4
 ```
 
-评测统一使用 `scripts/evaluate.py`，支持 `standard`、`friction-switch` 和 `rollout`。
-传入 `--config` 可读取已解析的评测 JSON，`--condition` 给该工况命名。只有导出策略时，用 `--iteration` 标注实际轮次。
-三个协议都可用 `--viewer` 实时查看，或在 MuJoCo 下加 `--video` 保存同一次仿真的回放。
+评测统一使用 `scripts/evaluate.py`。用 `--list-tasks` 查看四个 task，用 `--help` 查看所有参数。
+用 `--task` 选择评测，或用 `--config` 读取包含 `task`、`condition` 和 `parameters` 的 JSON。
+环境来自训练目录的 `training/config.json`，task 参数再应用到该配置。评测产物中的 `eval-config.json` 保存生效配置。
+权重轮次无法推断时，用 `--iteration` 指定。各 task 都可用 `--viewer` 实时查看，或在 MuJoCo 下加 `--video` 保存同一次仿真的回放。
 ICC 无窗口录制使用 `MUJOCO_GL=egl`。显式 `--output` 指向本次评测的新目录。
 
 ### 标准速度跟踪评测
 
 ```bash
-uv run --extra train python scripts/evaluate.py --run-dir output/flat-supermimic-guided-001 --protocol standard
+uv run --extra train python scripts/evaluate.py --run-dir output/flat-supermimic-guided-001 --task standard
 ```
 
 每个种子跑 27 项，横向速度指令固定为 0。速度单位为 m/s，转向单位为 rad/s。
@@ -51,9 +52,21 @@ uv run --extra train python scripts/evaluate.py --run-dir output/flat-supermimic
 
 每项从默认姿态开始，最多运行 20 秒。摔倒时记录时间并结束该项，继续后续工况。
 报告包含全程及去掉前 2 秒后的速度 RMSE，以及走停工况的稳定用时和末 2 秒位移。
-标准协议默认用种子 1，可用 `--seeds` 对整套工况复测。
+`standard` 默认用种子 1，可用 `--seeds` 对整套工况复测。
 
-摩擦切换对照使用 `python scripts/evaluate.py --protocol friction-switch --run-dir <训练目录>`。
+### 固定低摩擦评测
+
+`low-friction` 复用标准速度跟踪的 27 项测试。下例将左前、右前、左后、右后的滑动摩擦分别固定为
+0.1、0.6、0.2、0.8。修改 JSON 中的 `condition` 和四脚系数即可复测其他工况。质心和质量设置沿用训练配置。
+
+```bash
+uv run --extra train python scripts/evaluate.py --run-dir output/flat-supermimic-guided-001 \
+  --config configs/evaluation/low_friction.example.json
+```
+
+### 行进中切换摩擦
+
+摩擦切换对照使用 `python scripts/evaluate.py --task friction-switch --run-dir <训练目录>`。
 两组都以 0.5 m/s 直行，对照组保持滑动摩擦 0.8，切换组每 5 秒依次使用 0.8、0.4、0.8。
 报告记录各阶段实际接触摩擦、跟踪误差和摔倒时间。
 训练时可在启用 `foot_ground_friction` 后设置 `env_multiplier_range: [0.75, 1.25]` 和
@@ -147,9 +160,9 @@ CPU 开发调试可用 `--device cpu --num-envs 4`。输出目录须为新目录
 
 ```bash
 # 已训练策略的 sim2sim rollout，默认无窗口
-uv run --extra train python scripts/evaluate.py --protocol rollout --run-dir output/flat-ppo-001 --backend mujoco --steps 1000
+uv run --extra train python scripts/evaluate.py --task rollout --run-dir output/flat-ppo-001 --backend mujoco --steps 1000
 # 在训练后端评估同一策略
-uv run --extra train python scripts/evaluate.py --protocol rollout --run-dir output/flat-ppo-001 --backend genesis --steps 1000
+uv run --extra train python scripts/evaluate.py --task rollout --run-dir output/flat-ppo-001 --backend genesis --steps 1000
 ```
 
 评估使用固定种子和固定难度，但当前尚无保存初始状态/命令序列的正式基准。
@@ -184,7 +197,7 @@ uv run --extra train python scripts/evaluate.py --protocol rollout --run-dir out
 
 ```bash
 OMP_NUM_THREADS=2 uv run --extra train --extra unitree python scripts/train.py --device cpu --num-envs 4 --iterations 5 --output output/flat-ppo-local-check-002
-uv run --extra train --extra unitree python scripts/evaluate.py --protocol rollout --run-dir output/flat-ppo-local-check-002 --backend mujoco --steps 1000
+uv run --extra train --extra unitree python scripts/evaluate.py --task rollout --run-dir output/flat-ppo-local-check-002 --backend mujoco --steps 1000
 ```
 
 ## ICC 训练及第 700 轮 sim2sim 评测
@@ -301,11 +314,11 @@ uv sync --extra train --locked
 # 本机已验证 driver 的绝对路径见下方说明；仓库不附带教师权重。
 uv run --extra train python scripts/train.py --config configs/experiments/flat_supermimic_guided.yaml \
   --driver-policy /absolute/path/to/compatible-go2-policy.pt --output output/flat-supermimic-guided-001
-uv run --extra train python scripts/evaluate.py --run-dir output/flat-supermimic-guided-001 --protocol standard
-uv run --extra train python scripts/evaluate.py --run-dir output/flat-supermimic-guided-001 --protocol standard \
+uv run --extra train python scripts/evaluate.py --run-dir output/flat-supermimic-guided-001 --task standard
+uv run --extra train python scripts/evaluate.py --run-dir output/flat-supermimic-guided-001 --task standard \
   --seeds 201 202 203 204 205 206 207 208 209 210
 # 导出策略推理不需要 --driver-policy，也不会读取教师模型。
-uv run --extra train python scripts/evaluate.py --protocol rollout --run-dir output/flat-supermimic-guided-001 --backend mujoco --steps 1000
+uv run --extra train python scripts/evaluate.py --task rollout --run-dir output/flat-supermimic-guided-001 --backend mujoco --steps 1000
 ```
 
 已验证配置为 Genesis CPU、32 环境、900 轮：16 个环境由当前 actor 采集，16 个由 driver 采集。
@@ -332,7 +345,7 @@ GPU 可覆盖 `--device cuda --num-envs ...`，但不同规模尚未重新调优
 ```bash
 CUDA_VISIBLE_DEVICES=1 uv run --extra train python scripts/train.py \
   --config configs/experiments/flat_supermimic_bootstrap.yaml --output output/flat-supermimic-bootstrap-001
-uv run --extra train python scripts/evaluate.py --run-dir output/flat-supermimic-bootstrap-001 --protocol standard
+uv run --extra train python scripts/evaluate.py --run-dir output/flat-supermimic-bootstrap-001 --task standard
 ```
 
 2026-11-02 ICC GPU 1 的一次完整训练使用旧调度（300 轮世界模型预热、每轮 2 个模型 batch、

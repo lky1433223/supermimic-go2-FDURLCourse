@@ -7,7 +7,7 @@
 
 ## 执行机器与同步
 
-- 使用 `python scripts/train.py` 训练、`python scripts/evaluate.py` 评测、`python scripts/check_env.py` 检查环境。评测协议为 `standard`、`friction-switch` 和 `rollout`。
+- 使用 `python scripts/train.py` 训练、`python scripts/evaluate.py` 评测、`python scripts/check_env.py` 检查环境。评测 task 为 `standard`、`low-friction`、`friction-switch` 和 `rollout`。
 
 - 训练、评测和视频录制必须使用仓库已有的脚本或命令入口。禁止用临时脚本、内联 Python、经 SSH 标准输入执行的代码等方式绕过现有入口。
 - 如果现有入口无法完成任务，先告诉用户缺少什么功能，并在对话里讨论如何接入仓库。等用户确认方案后再修改代码和运行实验。
