@@ -17,15 +17,30 @@ VIDEO_VIEW_AZIMUTH = {"default": 115, "front": 180, "rear": 0, "left": -90, "rig
 class EvaluationVideo:
     """One video across trials, including the last pose before an automatic reset."""
 
-    fps = 25
-    width = 640
-    height = 480
+    fps = 20
+    codec = "libx264"
+    crf = 24
+    max_bitrate_bps = 2_000_000
+    rate_buffer_bits = 4_000_000
 
     def __init__(self, path, *, views=("default",)):
         self.path = Path(path)
         self.views = tuple(views)
+        self.width, self.height = (640, 480) if len(self.views) == 1 else (448, 336)
         self.columns = min(2, len(self.views)) if len(self.views) <= 4 else 3
         self.rows = math.ceil(len(self.views) / self.columns)
+
+    @property
+    def encoding(self):
+        return {
+            "codec": self.codec,
+            "width": self.columns * self.width,
+            "height": self.rows * self.height,
+            "fps": self.fps,
+            "crf": self.crf,
+            "max_bitrate_bps": self.max_bitrate_bps,
+            "rate_buffer_bits": self.rate_buffer_bits,
+        }
 
     def __enter__(self):
         import cv2
@@ -40,7 +55,11 @@ class EvaluationVideo:
         self.camera.distance = 1.4
         self.camera.elevation = -14
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.writer = imageio.get_writer(str(self.path), fps=self.fps, codec="libx264", quality=7)
+        self.writer = imageio.get_writer(
+            str(self.path), fps=self.fps, codec=self.codec, quality=None,
+            output_params=["-crf", str(self.crf), "-maxrate", str(self.max_bitrate_bps),
+                           "-bufsize", str(self.rate_buffer_bits)],
+        )
         return self
 
     def __exit__(self, *exc):

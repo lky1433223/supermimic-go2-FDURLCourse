@@ -102,6 +102,7 @@ def run_evaluation(args, task, condition_name, parameters):
         if len(views) == 1:
             video_metadata['video_view'] = views[0]
         recording = EvaluationVideo(condition / 'replay.mp4', views=views)
+        video_metadata['video_encoding'] = recording.encoding
     metadata.update(video_metadata)
     write_json(dest / 'eval-config.json', metadata)
     print(f'Evaluation output: {dest.resolve()}', file=sys.stderr, flush=True)

@@ -36,7 +36,8 @@ ICC 无窗口录制使用 `MUJOCO_GL=egl`。显式 `--output` 指向本次评测
 这四种预设随机器狗的朝向转动。`default` 沿用固定朝向的斜侧跟拍。
 用 `--video --video-view front rear left right` 可将同一次仿真的四个视角录进一个 MP4。
 视角按参数顺序从左到右、从上到下排列。单选为整屏，双选为左右并排，三到四选为两行两列，五选为两行三列。
-每格尺寸为 640×480。实际视角顺序记录在 `eval-config.json` 的 `video_views` 中。
+单视角为 640×480，多视角每格为 448×336。录像统一使用 20 FPS、H.264、CRF 24 和 2 Mbit/s 码率上限。
+`eval-config.json` 的 `video_views` 和 `video_encoding` 分别记录实际视角顺序和编码设置。
 
 ### 标准速度跟踪评测
 
