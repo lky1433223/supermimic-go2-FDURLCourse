@@ -32,6 +32,11 @@ output/<实验目录>/
 环境来自训练目录的 `training/config.json`，task 参数再应用到该配置。评测产物中的 `eval-config.json` 保存生效配置。
 权重轮次无法推断时，用 `--iteration` 指定。各 task 都可用 `--viewer` 实时查看，或在 MuJoCo 下加 `--video` 保存同一次仿真的回放。
 ICC 无窗口录制使用 `MUJOCO_GL=egl`。显式 `--output` 指向本次评测的新目录。
+录制时可用 `--video --video-view front` 选正面视角，`rear`、`left`、`right` 分别为后、左、右。
+这四种预设随机器狗的朝向转动。`default` 沿用固定朝向的斜侧跟拍。
+用 `--video --video-view front rear left right` 可将同一次仿真的四个视角录进一个 MP4。
+视角按参数顺序从左到右、从上到下排列。单选为整屏，双选为左右并排，三到四选为两行两列，五选为两行三列。
+每格尺寸为 640×480。实际视角顺序记录在 `eval-config.json` 的 `video_views` 中。
 
 ### 标准速度跟踪评测
 

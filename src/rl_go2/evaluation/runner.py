@@ -93,11 +93,16 @@ def run_evaluation(args, task, condition_name, parameters):
         metadata['steps'] = args.steps
         run_options['steps'] = args.steps
     recording = nullcontext()
+    video_metadata = {}
     if args.video:
         from .video import EvaluationVideo
 
-        metadata['video'] = f'{condition_name}/replay.mp4'
-        recording = EvaluationVideo(condition / 'replay.mp4')
+        views = args.video_view or ['default']
+        video_metadata = {'video': f'{condition_name}/replay.mp4', 'video_views': views}
+        if len(views) == 1:
+            video_metadata['video_view'] = views[0]
+        recording = EvaluationVideo(condition / 'replay.mp4', views=views)
+    metadata.update(video_metadata)
     write_json(dest / 'eval-config.json', metadata)
     print(f'Evaluation output: {dest.resolve()}', file=sys.stderr, flush=True)
     with recording as video:
@@ -107,7 +112,6 @@ def run_evaluation(args, task, condition_name, parameters):
     write_json(condition / 'assessment.json', assessment)
     summary = {key: value for key, value in assessment.items() if key != 'per_case' or 'groups' not in assessment}
     summary['assessment'] = f'{condition_name}/assessment.json'
-    if args.video:
-        summary['video'] = metadata['video']
+    summary.update(video_metadata)
     write_json(dest / 'summary.json', summary)
     print(json.dumps(summary, indent=2))

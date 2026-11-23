@@ -5,6 +5,7 @@ from pathlib import Path
 
 from .runner import run_evaluation
 from .tasks import TASKS, rollout, standard
+from .video import VIDEO_VIEW_AZIMUTH
 
 
 def resolve_task(task_name, path):
@@ -52,6 +53,8 @@ def main(argv=None):
     parser.add_argument('--num-envs', type=int, default=1, help='Number of simulation environments (default: 1)')
     parser.add_argument('--viewer', action='store_true', help='Open a simulation viewer')
     parser.add_argument('--video', action='store_true', help='Record replay.mp4 with MuJoCo')
+    parser.add_argument('--video-view', choices=VIDEO_VIEW_AZIMUTH, nargs='+',
+                        help='One or more camera views for --video, in display order (default: default)')
     parser.add_argument('--output', type=Path, help='New directory for this evaluation')
     args = parser.parse_args()
     if args.list_tasks:
@@ -72,6 +75,10 @@ def main(argv=None):
         parser.error('--num-envs must be positive and --iteration must be nonnegative')
     if not is_rollout and (args.device != 'cpu' or args.num_envs != 1):
         parser.error('Only rollout supports device and environment count overrides')
+    if args.video_view is not None and not args.video:
+        parser.error('--video-view requires --video')
+    if args.video_view and len(set(args.video_view)) != len(args.video_view):
+        parser.error('--video-view values must be distinct')
     if (args.video or task.TASK == 'friction-switch') and args.backend != 'mujoco':
         parser.error('Video and friction-switch require MuJoCo')
     if args.backend == 'mujoco' and (args.device != 'cpu' or args.num_envs != 1):
