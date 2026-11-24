@@ -170,6 +170,9 @@ def run_evaluation(args, task):
                                   push_events=push_events)
         trial = case.trials[0]
         case_metadata = {**common, 'condition': trial.condition.name, 'scene': trial.scene} if plan.scenes else common
+        height_maps = case.scene_config(config, trial)['scene'].get('height_maps')
+        if height_maps:
+            case_metadata['height_maps'] = height_maps
         write_json(case_dir / 'assessment.json', {**case_metadata, **report})
         results.extend(report['per_case'])
 

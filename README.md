@@ -124,7 +124,7 @@ python scripts/evaluate.py --task point-push --run-dir <训练目录> \
 
 ### 地形场景对照
 
-`python scripts/evaluate.py --task terrain --run-dir <训练目录>` 用同一策略和标称物理工况在平地、2/4/6 cm 台阶和 5°/10° 缓坡上执行 8 秒直行。
+`python scripts/evaluate.py --task terrain --run-dir <训练目录>` 用同一策略和标称物理工况在平地、2/4/6 cm 台阶、5°/10° 缓坡和两张随机不平整地面上执行 8 秒直行。
 可加 `--backend genesis` 用同一套件检查 Genesis。`eval-config.json` 的 `scenes` 记录解析后的碰撞几何和机器人出生位姿，
 `summary.json` 按场景汇总试次与摔倒次数。各场景的报告和可选录像保存在 `<场景>/<工况>/`。
 
@@ -134,6 +134,11 @@ python scripts/evaluate.py --task point-push --run-dir <训练目录> \
 训练配置可用 `scene: ../scenes/single_step.yaml` 或 `scene: ../scenes/ramp.yaml` 选择地形。
 评测套件在 `EvaluationGroup` 中选择场景、工况与动作，可通过 `SceneSpec.entity_overrides` 复用地形文件并指定多个高度或坡度。
 当前地形套件使用平地步行任务的奖励和终止规则。
+
+`configs/scenes/rough_ground.yaml` 用 `seed` 生成一张 5×4 的高度图。每块砖默认边长 30 cm，高度为 0、1 或 2 cm，
+相邻高差与入口、出口到平地的高差最多为 1 cm。`terrain` 使用地形种子 101 和 102，地形种子独立于 `--seeds`。
+`eval-config.json` 和对应场景的 `assessment.json` 保存地形种子和实际高度图。
+训练配置可用 `scene: ../scenes/rough_ground.yaml` 加载该文件指定的地图，地图在环境创建时生成。
 
 训练启动时会打印绝对输出路径。历史 `runs/` 及当前已有产物保持原位，仍被忽略，不自动迁移。
 

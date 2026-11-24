@@ -2,11 +2,16 @@
 
 from collections.abc import Mapping
 import math
+from random import Random
 
 
 STEP_FIELDS = {"length_m", "width_m", "height_m", "start_x_m", "center_y_m", "base_z_m"}
 RAMP_FIELDS = {"run_m", "width_m", "platform_length_m", "thickness_m", "slope_deg",
                "start_x_m", "center_y_m", "base_z_m"}
+ROUGH_GROUND_INTEGERS = {"rows", "columns", "seed", "max_height_level", "max_adjacent_delta_levels"}
+ROUGH_GROUND_FIELDS = ROUGH_GROUND_INTEGERS | {
+    "tile_size_m", "height_increment_m", "start_x_m", "center_y_m", "base_z_m",
+}
 
 
 def terrain_parameters(entity: dict, overrides: Mapping[str, float], fields: set[str]) -> dict:
@@ -68,21 +73,83 @@ def ramp_boxes(entity: dict, overrides: Mapping[str, float]) -> tuple[dict, dict
     )
 
 
-def resolve_terrain_entities(entities: list[dict], overrides: Mapping[str, Mapping[str, float]]) -> list[dict]:
-    """Expand terrain declarations and reject overrides for unknown or fixed entities."""
+def sample_height_levels(rows: int, columns: int, max_height: int, max_delta: int, seed: int) -> list[list[int]]:
+    """Sample a grid bounded by its cardinal neighbors and level entry and exit."""
+    rng = Random(seed)
+    levels: list[list[int]] = []
+    for row_index in range(rows):
+        # Leave enough rows to reach level zero at both ends of the patch.
+        row_max = min(max_height, (row_index + 1) * max_delta, (rows - row_index) * max_delta)
+        row: list[int] = []
+        for column in range(columns):
+            neighbors = []
+            if row_index:
+                neighbors.append(levels[-1][column])
+            if column:
+                neighbors.append(row[-1])
+            lower = max(0, max(neighbors, default=0) - max_delta)
+            upper = min(row_max, min(neighbors, default=row_max) + max_delta)
+            row.append(rng.randint(lower, upper))
+        levels.append(row)
+    if not any(map(any, levels)):
+        levels[rng.randrange(rows)][rng.randrange(columns)] = 1
+    return levels
+
+
+def rough_ground_boxes(entity: dict, overrides: Mapping[str, float]) -> tuple[list[dict], dict]:
+    """Create tiles above the supporting plane and return the resolved height map in metres."""
+    values = terrain_parameters(entity, overrides, ROUGH_GROUND_FIELDS)
+    name = entity["id"]
+    if any(type(values[key]) is not int for key in ROUGH_GROUND_INTEGERS):
+        raise ValueError(f"Rough ground {name} requires integer dimensions in tiles, seed and height levels")
+    rows, columns = values["rows"], values["columns"]
+    max_height, max_delta = values["max_height_level"], values["max_adjacent_delta_levels"]
+    tile, increment = values["tile_size_m"], values["height_increment_m"]
+    if min(rows, columns, max_height, max_delta, tile, increment) <= 0:
+        raise ValueError(f"Rough ground {name} requires positive dimensions, height and adjacent delta")
+
+    seed = values["seed"]
+    heights = [[level * increment for level in row]
+               for row in sample_height_levels(rows, columns, max_height, max_delta, seed)]
+    start_x, center_y, base_z = (values[key] for key in ("start_x_m", "center_y_m", "base_z_m"))
+    start_y = center_y - columns * tile / 2
+    boxes = []
+    for row, row_heights in enumerate(heights):
+        for column, height in enumerate(row_heights):
+            if height == 0:
+                continue
+            boxes.append({
+                "id": f"{name}-{row}-{column}", "type": "box", "fixed": True,
+                "position": [start_x + (row + 0.5) * tile, start_y + (column + 0.5) * tile, base_z + height / 2],
+                "size": [tile, tile, height], "friction": values.get("friction", 0.8),
+            })
+    metadata = {"seed": seed, "height_map_m": heights, "tile_size_m": tile,
+                "start_x_m": start_x, "center_y_m": center_y, "base_z_m": base_z,
+                "max_height_m": max_height * increment, "max_adjacent_delta_m": max_delta * increment}
+    return boxes, metadata
+
+
+def resolve_terrain_entities(
+    entities: list[dict], overrides: Mapping[str, Mapping[str, float]],
+) -> tuple[list[dict], dict[str, dict]]:
+    """Expand terrain declarations and return geometry and generated height maps."""
     names = [entity["id"] for entity in entities]
     if len(names) != len(set(names)):
         raise ValueError("Duplicate authored scene entity id")
     remaining = dict(overrides)
     resolved = []
+    height_maps = {}
     for entity in entities:
         kind, name = entity["type"], entity["id"]
         if kind == "step":
             resolved.append(step_box(entity, remaining.pop(name, {})))
         elif kind == "ramp":
             resolved.extend(ramp_boxes(entity, remaining.pop(name, {})))
+        elif kind == "rough_ground":
+            boxes, height_maps[name] = rough_ground_boxes(entity, remaining.pop(name, {}))
+            resolved.extend(boxes)
         else:
             resolved.append(entity)
     if remaining:
-        raise ValueError(f"Overrides require named step or ramp entities: {sorted(remaining)}")
-    return resolved
+        raise ValueError(f"Overrides require named terrain entities: {sorted(remaining)}")
+    return resolved, height_maps

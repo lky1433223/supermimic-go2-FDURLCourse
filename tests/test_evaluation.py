@@ -75,7 +75,7 @@ class EvaluationTests(unittest.TestCase):
     def test_terrain_plan_resolves_one_box_per_step_and_partitions_outputs(self):
         task = TASKS['terrain']
         plan = task.build_plan()
-        scenes = ['flat', 'step-2cm', 'step-4cm', 'step-6cm', 'ramp-5deg', 'ramp-10deg']
+        scenes = ['flat', 'step-2cm', 'step-4cm', 'step-6cm', 'ramp-5deg', 'ramp-10deg', 'rough-101', 'rough-102']
         self.assertEqual([trial.scene for trial in plan.trials], scenes)
         self.assertEqual(len({trial.event_key(1) for trial in plan.trials}), len(scenes))
         self.assertEqual(len({trial.motion for trial in plan.trials}), 1)
@@ -91,6 +91,9 @@ class EvaluationTests(unittest.TestCase):
         for case in records.values():
             trial, = case.trials
             self.assertEqual(case.scene_config({}, trial)['scene'], plan.scenes[trial.scene])
+        for seed in (101, 102):
+            rough = plan.scenes[f'rough-{seed}']['height_maps']['rough']
+            self.assertEqual(rough['seed'], seed)
 
     def test_execute_plan_reuses_environment_until_scene_changes(self):
         plan = TASKS['terrain'].build_plan()

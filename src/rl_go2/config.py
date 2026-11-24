@@ -123,7 +123,9 @@ def load_scene(path: str | Path, *, entity_overrides: Mapping[str, Mapping[str, 
     if len(sim["gravity"]) != 3 or not all(math.isfinite(x) for x in sim["gravity"]):
         raise ValueError("gravity must be three finite values")
     seen = set()
-    scene["entities"] = resolve_terrain_entities(scene["entities"], entity_overrides or {})
+    scene["entities"], height_maps = resolve_terrain_entities(scene["entities"], entity_overrides or {})
+    if height_maps:
+        scene["height_maps"] = height_maps
     for entity in scene["entities"]:
         eid = entity["id"]
         if eid in seen:

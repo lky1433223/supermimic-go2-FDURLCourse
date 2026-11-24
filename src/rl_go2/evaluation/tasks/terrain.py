@@ -9,11 +9,12 @@ from ..task import EvaluationGroup, EvaluationTask, SceneSpec
 
 STEP_SCENE = FLAT_SCENE_PATH.with_name('single_step.yaml')
 RAMP_SCENE = FLAT_SCENE_PATH.with_name('ramp.yaml')
+ROUGH_SCENE = FLAT_SCENE_PATH.with_name('rough_ground.yaml')
 
 
 class TerrainTask(EvaluationTask):
     TASK = 'terrain'
-    TASK_DESCRIPTION = 'Compare straight walking on flat ground, single steps, and ramps.'
+    TASK_DESCRIPTION = 'Compare straight walking on flat ground, single steps, ramps, and seeded rough ground.'
 
     evaluation_groups = (
         EvaluationGroup(
@@ -25,6 +26,8 @@ class TerrainTask(EvaluationTask):
                 SceneSpec('step-6cm', STEP_SCENE, {'step': {'height_m': 0.06}}),
                 SceneSpec('ramp-5deg', RAMP_SCENE, {'ramp': {'slope_deg': 5.0}}),
                 SceneSpec('ramp-10deg', RAMP_SCENE, {'ramp': {'slope_deg': 10.0}}),
+                SceneSpec('rough-101', ROUGH_SCENE, {'rough': {'seed': 101}}),
+                SceneSpec('rough-102', ROUGH_SCENE, {'rough': {'seed': 102}}),
             ),
             conditions=(NOMINAL_SAMPLE.condition('nominal', NOMINAL_SLIDING),),
             motions=(MotionTask('forward_0.5', 0.5, duration_seconds=8),),

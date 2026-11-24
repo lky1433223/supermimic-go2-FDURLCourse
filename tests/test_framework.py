@@ -99,8 +99,56 @@ class FrameworkTests(unittest.TestCase):
         for height in (0, -0.01, float('inf'), True):
             with self.subTest(height=height), self.assertRaisesRegex(ValueError, 'Step step'):
                 load_scene(path, entity_overrides={'step': {'height_m': height}})
-        with self.assertRaisesRegex(ValueError, 'named step or ramp entities'):
+        with self.assertRaisesRegex(ValueError, 'named terrain entities'):
             load_scene(path, entity_overrides={'ground': {'height_m': 0.05}})
+
+    def test_rough_ground_seed_reproduces_geometry_and_bounded_height_changes(self):
+        path = ROOT / 'configs/scenes/rough_ground.yaml'
+        first = load_scene(path)
+        second = load_scene(path, entity_overrides={'rough': {'seed': 102}})
+        self.assertEqual(first, load_scene(path, entity_overrides={'rough': {'seed': 101}}))
+        self.assertNotEqual(first['height_maps']['rough']['height_map_m'], second['height_maps']['rough']['height_map_m'])
+        for scene in (first, second):
+            metadata = scene['height_maps']['rough']
+            heights = metadata['height_map_m']
+            tiles = {entity['id']: entity for entity in scene['entities'] if entity['type'] == 'box'}
+            self.assertEqual(len(heights), 5)
+            for row, row_heights in enumerate(heights):
+                self.assertEqual(len(row_heights), 4)
+                for column, height in enumerate(row_heights):
+                    self.assertIn(height, (0, 0.01, 0.02))
+                    previous_height = heights[row - 1][column] if row else 0
+                    self.assertLessEqual(abs(height - previous_height), 0.01)
+                    if row == len(heights) - 1:
+                        self.assertLessEqual(height, 0.01)
+                    if column:
+                        self.assertLessEqual(abs(height - row_heights[column - 1]), 0.01)
+                    tile = tiles.pop(f'rough-{row}-{column}', None)
+                    if height == 0:
+                        self.assertIsNone(tile)
+                    else:
+                        self.assertEqual(tile['size'], [0.30, 0.30, height])
+                        self.assertAlmostEqual(tile['position'][2] + tile['size'][2] / 2, height)
+            self.assertFalse(tiles)
+
+    def test_mujoco_rough_ground_matches_height_map(self):
+        import mujoco
+        import numpy as np
+
+        scene = load_scene(ROOT / 'configs/scenes/rough_ground.yaml')
+        config = {**self.config, 'scene': scene, 'backend': 'mujoco', 'device': 'cpu', 'num_envs': 1}
+        env = QuadrupedEnv(NOMINAL_SAMPLE.condition('rough-contact', NOMINAL_SLIDING).apply(config))
+        try:
+            heights = scene['height_maps']['rough']['height_map_m']
+            for row, row_heights in enumerate(heights):
+                for column, height in enumerate(row_heights):
+                    origin = np.array([0.8 + (row + 0.5) * 0.30, (column - 1.5) * 0.30, 1.0])
+                    distance = mujoco.mj_ray(env.backend.model, env.backend.data, origin,
+                                             np.array([0.0, 0.0, -1.0]), None, True, -1,
+                                             np.zeros(1, dtype=np.int32))
+                    self.assertAlmostEqual(1 - distance, height, places=7)
+        finally:
+            env.close()
 
     def test_ramp_slope_override_rejects_invalid_values(self):
         for slope in (0, -5, 90, float('nan')):
