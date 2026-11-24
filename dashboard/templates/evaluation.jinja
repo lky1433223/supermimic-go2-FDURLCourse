@@ -44,8 +44,18 @@
     {% endif %}
     {% if selected and selected.video %}
       {% set video_url = request.url_for('artifact', run_name=run_name, iteration=item.iteration, evaluation_name=item.name, kind='video').path ~ '?case=' ~ (selected.name|urlencode) %}
-      <div class="player" data-video-url="{{ video_url }}">
-        {% if selected.preview %}
+      {% set hls_url = request.url_for('hls_media', run_name=run_name, iteration=item.iteration, evaluation_name=item.name, media_path='master.m3u8').path ~ '?case=' ~ (selected.name|urlencode) %}
+      <div class="player" data-video-url="{{ video_url }}"{% if selected.hls %} data-hls-url="{{ hls_url }}"{% endif %}>
+        {% if selected.hls %}
+          <label>画质
+            <select id="video-quality">
+              <option value="auto">自动</option>
+              <option value="0">省流</option>
+              <option value="1">清晰</option>
+              <option value="{{ video_url }}">原版 MP4</option>
+            </select>
+          </label>
+        {% elif selected.preview %}
           {% set preview_url = request.url_for('artifact', run_name=run_name, iteration=item.iteration, evaluation_name=item.name, kind='preview').path ~ '?case=' ~ (selected.name|urlencode) %}
           <label>画质
             <select id="video-quality">
@@ -62,6 +72,7 @@
         <button id="retry-video" type="button" hidden>重新连接并续播</button>
         <noscript><a href="{{ video_url }}">打开回放</a></noscript>
       </div>
+      {% if selected.hls %}<script defer src="{{ request.url_for('static', path='vendor/hls.min.js').path }}"></script>{% endif %}
       <script defer src="{{ request.url_for('static', path='player.js').path }}"></script>
     {% else %}
       <p class="muted">该工况暂无可播放的回放。</p>

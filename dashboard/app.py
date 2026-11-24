@@ -4,6 +4,7 @@ import os
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, Response
@@ -158,6 +159,36 @@ def create_app(output_root: Path | None = None) -> FastAPI:
             has_config=config is not None, metadata=metadata, date=evaluation_label(item),
             totals=trial_totals(report or summary or {}),
         )
+
+    @app.get('/runs/{run_name}/eval/{iteration}/{evaluation_name}/hls/{media_path:path}')
+    def hls_media(
+        run_name: str, iteration: int, evaluation_name: str, media_path: str, case: str = '',
+    ) -> Response:
+        """Serve only prepared playlists and segments belonging to a listed case."""
+        try:
+            item = find_evaluation(run_name, iteration, evaluation_name)
+        except ArtifactError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        complete = local_file(item.path / 'summary.json') is not None
+        complete = complete or local_file(item.path / 'eval-config.json') is None
+        cases = evaluation_cases(item, complete=complete)
+        entry = next((entry for entry in cases if entry.name == case and entry.hls), None)
+        if entry is None or not re.fullmatch(
+            r'master\.m3u8|(?:low|high)/(?:index\.m3u8|segment-\d+\.ts)', media_path,
+        ):
+            raise HTTPException(404, '找不到 HLS 产物。')
+        path = entry.hls.parent / media_path
+        if path.parent.is_symlink() or local_file(path) is None:
+            raise HTTPException(404, '找不到 HLS 产物。')
+        if path.suffix == '.m3u8':
+            # Carry the case selector to relative variant and segment requests.
+            lines = path.read_text(encoding='utf-8').splitlines()
+            content = '\n'.join(
+                line + '?case=' + quote(case, safe='') if line and not line.startswith('#') else line
+                for line in lines
+            ) + '\n'
+            return Response(content, media_type='application/vnd.apple.mpegurl')
+        return FileResponse(path, media_type='video/mp2t')
 
     @app.api_route(
         '/runs/{run_name}/eval/{iteration}/{evaluation_name}/artifact/{kind}',

@@ -6,6 +6,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from dashboard.cache import bundle_directory
+
 
 class ArtifactError(Exception):
     """An output directory or artifact cannot be shown."""
@@ -32,6 +34,7 @@ class EvaluationCase:
     assessment: Path | None
     video: Path | None
     preview: Path | None
+    hls: Path | None
 
 
 def local_file(path: Path) -> Path | None:
@@ -107,7 +110,9 @@ def evaluation_cases(evaluation: Evaluation, *, complete: bool) -> list[Evaluati
             continue
         name = directory.relative_to(root).as_posix()
         preview = local_file(directory / 'replay-preview.mp4') if video else None
-        cases.append(EvaluationCase(name, assessment, video, preview))
+        hls_dir = bundle_directory(video) if video else None
+        hls = local_file(hls_dir / 'master.m3u8') if hls_dir and not hls_dir.is_symlink() else None
+        cases.append(EvaluationCase(name, assessment, video, preview, hls))
     return cases
 
 

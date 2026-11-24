@@ -9,6 +9,8 @@ let position = 0;
 let lastSaved = 0;
 let pendingPosition = null;
 let stallTimer;
+let hls = null;
+let started = false;
 
 try {
   position = Number(localStorage.getItem(storageKey)) || 0;
@@ -34,8 +36,26 @@ function loadVideo(play) {
   clearTimeout(stallTimer);
   start.hidden = true;
   pendingPosition = position;
-  video.src = quality?.value || player.dataset.videoUrl;
-  video.load();
+  started = true;
+  const useHls = player.dataset.hlsUrl && ['auto', '0', '1'].includes(quality.value);
+  if (hls) {
+    hls.destroy();
+    hls = null;
+  }
+  if (useHls && Hls.isSupported()) {
+    hls = new Hls({startLevel: 0, maxBufferLength: 20, backBufferLength: 10});
+    hls.on(Hls.Events.MANIFEST_PARSED, () => {
+      hls.currentLevel = quality.value === 'auto' ? -1 : Number(quality.value);
+    });
+    hls.on(Hls.Events.ERROR, (_, data) => {
+      if (data.fatal) showStatus('视频连接中断，可以重新连接。', true);
+    });
+    hls.loadSource(player.dataset.hlsUrl);
+    hls.attachMedia(video);
+  } else {
+    video.src = useHls ? player.dataset.videoUrl : (quality?.value || player.dataset.videoUrl);
+    video.load();
+  }
   showStatus('正在连接 ICC…');
   stallTimer = setTimeout(() => showStatus('连接耗时较长。', true), 8000);
   if (play) {
@@ -50,7 +70,9 @@ function loadVideo(play) {
 start.addEventListener('click', () => loadVideo(true));
 retry.addEventListener('click', () => loadVideo(true));
 quality?.addEventListener('change', () => {
-  if (video.hasAttribute('src')) loadVideo(!video.paused);
+  if (hls && ['auto', '0', '1'].includes(quality.value)) {
+    hls.currentLevel = quality.value === 'auto' ? -1 : Number(quality.value);
+  } else if (started) loadVideo(!video.paused);
 });
 
 video.addEventListener('loadedmetadata', () => {
