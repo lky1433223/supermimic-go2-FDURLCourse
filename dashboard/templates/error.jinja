@@ -1,0 +1,10 @@
+{% extends "base.jinja" %}
+{% block title %}无法打开结果 · Go2 实验看板{% endblock %}
+{% block content %}
+<section class="panel body-panel error-page">
+  <h1>无法打开结果</h1>
+  <p>{{ message }}</p>
+  {% if run_name %}<a href="{{ request.url_for('run_detail', run_name=run_name).path }}">返回实验</a>
+  {% else %}<a href="{{ request.url_for('index').path }}">返回实验列表</a>{% endif %}
+</section>
+{% endblock %}

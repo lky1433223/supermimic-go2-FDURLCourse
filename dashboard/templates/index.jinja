@@ -1,0 +1,27 @@
+{% extends "base.jinja" %}
+{% block content %}
+<section class="page-heading">
+  <h1>训练实验</h1>
+  <form method="get" class="search" role="search">
+    <label class="sr-only" for="q">筛选实验名称</label>
+    <input id="q" name="q" type="search" placeholder="筛选实验名称" value="{{ q }}">
+    <button type="submit">搜索</button>
+    {% if q %}<a href="{{ request.url_for('index').path }}">清除</a>{% endif %}
+  </form>
+</section>
+<div class="panel table-wrap">
+  <table>
+    <thead><tr><th>实验名称</th><th>评测次数</th><th>目录更新时间（北京时间）</th></tr></thead>
+    <tbody>
+      {% for run in runs %}
+      <tr>
+        <td><a href="{{ request.url_for('run_detail', run_name=run.name).path }}">{{ run.name }}</a></td>
+        <td>{{ run.evaluations }}</td><td>{{ run.updated }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="3" class="muted">没有匹配的实验。</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

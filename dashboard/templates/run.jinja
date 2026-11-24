@@ -1,0 +1,77 @@
+{% extends "base.jinja" %}
+{% block title %}{{ run_name }} · Go2 实验看板{% endblock %}
+{% block content %}
+<nav class="breadcrumb" aria-label="当前位置"><a href="{{ request.url_for('index').path }}">训练实验</a></nav>
+<section class="page-heading"><h1>{{ run_name }}</h1></section>
+<section aria-labelledby="evaluations-heading">
+  <div class="page-heading section-heading">
+    <h2 id="evaluations-heading">评测结果</h2>
+    {% if items %}
+    <div class="filters">
+      <label>Checkpoint
+        <select id="iteration-filter">
+          <option value="">全部</option>
+          {% for iteration in items|map(attribute='iteration')|unique %}<option>{{ iteration }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>套件
+        <select id="task-filter">
+          <option value="">全部</option>
+          {% for task in items|map(attribute='task')|unique|sort %}<option>{{ task }}</option>{% endfor %}
+        </select>
+      </label>
+      <label class="checkbox"><input id="video-filter" type="checkbox">有回放</label>
+    </div>
+    {% endif %}
+  </div>
+  <div class="panel table-wrap">
+    <table>
+      <thead><tr><th>套件与执行记录</th><th>Checkpoint</th><th>摔倒 / 试次</th><th>回放</th></tr></thead>
+      <tbody>
+        {% for item in items %}
+        <tr data-evaluation data-iteration="{{ item.iteration }}" data-task="{{ item.task }}" data-videos="{{ item.videos }}">
+          <td>
+            <a href="{{ request.url_for('evaluation_detail', run_name=run_name, iteration=item.iteration, evaluation_name=item.name).path }}">{{ item.task }}</a>
+            <span class="subline">{{ item.date }}{% if item.backend %} · {{ item.backend }}{% endif %}{% if item.machine %} · {{ item.machine }}{% endif %}</span>
+            <span class="subline directory">{{ item.name }}</span>
+            {% if item.error %}<span class="warning subline">{{ item.error }}</span>
+            {% elif not item.has_summary %}<span class="muted subline">缺少汇总报告</span>{% endif %}
+          </td>
+          <td>{{ item.iteration }}</td>
+          <td>{% if item.trials is not none %}{{ item.falls }} / {{ item.trials }}{% else %}—{% endif %}</td>
+          <td>{% if item.videos %}<span class="tag">{{ item.videos }} 段</span>{% else %}—{% endif %}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="4" class="muted">暂无评测结果。</td></tr>
+        {% endfor %}
+        <tr id="filter-empty" hidden><td colspan="4" class="muted">没有符合筛选条件的评测。</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+<section aria-labelledby="training-heading">
+  <div class="page-heading section-heading"><h2 id="training-heading">训练进度</h2></div>
+  <div class="panel body-panel">
+    {% if exit_code == '0' %}<p class="tag">已完成</p>
+    {% elif exit_code %}<p class="warning">训练退出码 {{ exit_code }}</p>{% endif %}
+    {% if metric_error %}<p class="warning">{{ metric_error }}</p>{% endif %}
+    <dl class="stats">
+      <div><dt>训练轮次</dt><dd>{{ latest.get('iteration', '—') }}{% if budget %} / {{ budget }}{% endif %}</dd></div>
+      <div><dt>环境步数</dt><dd>{{ latest.get('environment_steps', '—') }}</dd></div>
+      <div><dt>策略更新次数</dt><dd>{{ latest.get('policy_updates', '—') }}</dd></div>
+    </dl>
+    {% if latest %}
+    <label class="chart-label">训练指标
+      <select id="metric-select">
+        {% for field, label in [('real_reward', '实际奖励'), ('model_loss', '模型损失'), ('reset_fraction', '重置比例')] %}
+        {% if series[field] %}<option value="{{ field }}">{{ label }}</option>{% endif %}
+        {% endfor %}
+      </select>
+    </label>
+    <canvas id="training-chart" aria-label="训练指标随轮次变化的折线图"></canvas>
+    <script id="training-series" type="application/json">{{ series|tojson }}</script>
+    {% elif not metric_error %}<p class="muted">暂无逐轮训练指标。</p>{% endif %}
+  </div>
+</section>
+<script defer src="{{ request.url_for('static', path='run.js').path }}"></script>
+{% endblock %}

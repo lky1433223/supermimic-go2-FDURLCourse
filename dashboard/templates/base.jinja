@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Go2 实验看板{% endblock %}</title>
+  <link rel="stylesheet" href="{{ request.url_for('static', path='dashboard.css').path }}">
+</head>
+<body>
+  <header class="topbar">
+    <nav class="container"><a class="brand" href="{{ request.url_for('index').path }}">Go2 <span>实验看板</span></a></nav>
+  </header>
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>
