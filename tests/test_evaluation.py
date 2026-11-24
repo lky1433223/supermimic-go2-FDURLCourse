@@ -124,24 +124,28 @@ class EvaluationTests(unittest.TestCase):
     def test_point_push_pairs_share_placement_and_timing(self):
         task = TASKS['point-push']
         plan = task.build_plan()
-        self.assertEqual(len(plan.trials) * len(task.default_seeds), 90)
+        self.assertEqual(len(plan.trials) * len(task.default_seeds), 126)
         self.assertEqual(sum(trial.condition.point_push is None for trial in plan.trials), 6)
         geometry = SimpleNamespace(sample_points=lambda directions: directions + torch.rand(directions.shape))
         config = {'robot': {'base_link': 'base'}}
-        for target, limit in (('base', 20.0), ('foot', 8.0)):
+        for target, levels in (
+            ('base', (('limit', 20.0), ('ood', 30.0), ('80n', 80.0), ('160n', 160.0))),
+            ('foot', (('limit', 8.0), ('ood', 12.0))),
+        ):
             events = []
-            for level in ('limit', 'ood'):
+            for level, magnitude in levels:
                 trial = next(trial for trial in plan.trials
                              if trial.condition.name == f'{target}-{level}' and trial.name == 'walk_to_stop')
-                events.append(sample_event(config, geometry, 0.02, trial, 1))
-            boundary, outside = events
-            self.assertEqual((boundary.start_step, boundary.end_step), (500, 510))
-            self.assertEqual(boundary.start_step, outside.start_step)
-            self.assertEqual(boundary.link_name, outside.link_name)
-            self.assertEqual(boundary.point_local_m, outside.point_local_m)
-            force = torch.tensor(boundary.force_world_n)
-            self.assertAlmostEqual(force.norm().item(), limit, places=5)
-            torch.testing.assert_close(torch.tensor(outside.force_world_n), 1.5 * force)
+                event = sample_event(config, geometry, 0.02, trial, 1)
+                force = torch.tensor(event.force_world_n)
+                self.assertEqual((event.start_step, event.end_step), (500, 510))
+                torch.testing.assert_close(force.norm(), torch.tensor(magnitude))
+                events.append((event, force / magnitude))
+            boundary, direction = events[0]
+            for event, event_direction in events[1:]:
+                self.assertEqual(boundary.link_name, event.link_name)
+                self.assertEqual(boundary.point_local_m, event.point_local_m)
+                torch.testing.assert_close(direction, event_direction)
 
     def test_motion_and_friction_events_use_their_own_schedules(self):
         tracking = TASKS['standard'].build_plan()

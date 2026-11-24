@@ -21,6 +21,8 @@ class PointPushTask(BodyParameterTask):
         BASELINE,
         replace(BASELINE, name='base-limit', point_push=PushSpec('base', 20.0)),
         replace(BASELINE, name='base-ood', point_push=PushSpec('base', 30.0)),
+        replace(BASELINE, name='base-80n', point_push=PushSpec('base', 80.0)),
+        replace(BASELINE, name='base-160n', point_push=PushSpec('base', 160.0)),
         replace(BASELINE, name='foot-limit', point_push=PushSpec('foot', 8.0)),
         replace(BASELINE, name='foot-ood', point_push=PushSpec('foot', 12.0)),
     )
