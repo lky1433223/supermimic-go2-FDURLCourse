@@ -1,5 +1,8 @@
 from collections.abc import Callable
 from pathlib import Path
+import sys
+import time
+from typing import TYPE_CHECKING
 import xml.etree.ElementTree as ET
 
 import mujoco
@@ -9,6 +12,24 @@ import torch
 from rl_go2.backends import LinkPointForces
 from rl_go2.config import FOOT_NAMES, foot_friction_ranges
 from rl_go2.state import RobotState
+
+if TYPE_CHECKING:
+    from mujoco.viewer import Handle
+
+
+def _launch_passive_viewer(model: mujoco.MjModel, data: mujoco.MjData) -> 'Handle':
+    """Open a viewer after macOS finishes closing the preceding window."""
+    from mujoco import viewer
+
+    deadline = time.monotonic() + 2.0
+    while True:
+        try:
+            return viewer.launch_passive(model, data)
+        except RuntimeError as error:
+            viewer_busy = sys.platform == 'darwin' and str(error) == 'another MuJoCo viewer is already open'
+            if not viewer_busy or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.05)
 
 
 class MujocoBackend:
@@ -81,8 +102,7 @@ class MujocoBackend:
         self._interactive_force_callback: Callable[[mujoco.MjModel, mujoco.MjData], None] | None = None
         self.reset(torch.tensor([0]))
         if viewer:
-            from mujoco import viewer as viewer_module
-            self.viewer = viewer_module.launch_passive(self.model, self.data)
+            self.viewer = _launch_passive_viewer(self.model, self.data)
 
     def read_state(self):
         velocity = np.zeros(6)

@@ -117,6 +117,20 @@ class FrameworkTests(unittest.TestCase):
         finally:
             env.close()
 
+    def test_mujoco_viewer_retries_while_macos_releases_previous_window(self):
+        from rl_go2.backends.mujoco import _launch_passive_viewer
+
+        handle = object()
+        busy = RuntimeError('another MuJoCo viewer is already open')
+        with (
+            patch('rl_go2.backends.mujoco.sys.platform', 'darwin'),
+            patch('rl_go2.backends.mujoco.time.sleep') as sleep,
+            patch('mujoco.viewer.launch_passive', side_effect=[busy, handle]) as launch,
+        ):
+            self.assertIs(_launch_passive_viewer(None, None), handle)
+        self.assertEqual(launch.call_count, 2)
+        sleep.assert_called_once()
+
     @unittest.skipUnless(os.environ.get('RL_GO2_TEST_GENESIS') == '1', 'opt-in Genesis CPU kernel compilation')
     def test_genesis_step_is_in_randomized_foot_contact_surfaces(self):
         env = QuadrupedEnv(self.step_contact_config('genesis'))
