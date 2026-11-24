@@ -11,6 +11,7 @@ class Controls:
     max_yaw: float
     speed: float = 0.5
     yaw: float = 0.5
+    details: bool = False
     paused: bool = False
     stopped: bool = False
     reset_requested: bool = False
@@ -33,7 +34,9 @@ class Controls:
                 return
             if not pressed or repeat:
                 return
-            if key == 'up':
+            if key == 'details':
+                self.details = not self.details
+            elif key == 'up':
                 self.speed = min(self.max_speed, round(self.speed + 0.1, 2))
             elif key == 'down':
                 self.speed = max(0.0, round(self.speed - 0.1, 2))
@@ -72,31 +75,9 @@ class Controls:
         with self.lock:
             return {**self.telemetry, 'speed': self.speed, 'yaw': self.yaw,
                     'max_speed': self.max_speed, 'max_yaw': self.max_yaw,
-                    'paused': self.paused, 'stopped': self.stopped}
+                    'paused': self.paused, 'stopped': self.stopped, 'details': self.details}
 
     def publish(self, **values: object) -> None:
         """Update simulation telemetry without exposing mutable shared state."""
         with self.lock:
             self.telemetry.update(values)
-
-
-def hud_text(status: dict) -> str:
-    """Format a compact ASCII HUD supported by both native font renderers."""
-    command = status.get('command', [0.0, 0.0])
-    actual = status.get('actual', [0.0, 0.0])
-    state = 'PAUSED' if status['paused'] else 'RUNNING'
-    return '\n'.join([
-        f"SuperMimic | {status.get('backend', '')} | {state} | 1x",
-        str(status.get('policy', '')),
-        f"Speed {status['speed']:.2f} / {status['max_speed']:.2f} m/s"
-        f"   Turn {status['yaw']:.2f} / {status['max_yaw']:.2f} rad/s",
-        f"Command vx/yaw {command[0]:+.2f} / {command[1]:+.2f}",
-        f"Actual  vx/yaw {actual[0]:+.2f} / {actual[1]:+.2f}"
-        f"   Time {status.get('seconds', 0.0):.1f} s",
-        f"Training vx / vy / yaw: {status.get('training_ranges', [])}",
-        'W/S forward/back | A/D turn | Arrows adjust speed/turn',
-        'Space stop | P pause | R reset | Esc exit',
-        'Left drag robot: force | Drag empty area: orbit | Right drag: pan',
-        f"Mouse grab: {status.get('mouse_body', 'none')} | Force {status.get('mouse_force_n', 0.0):.1f} N"
-        if status.get('backend') == 'mujoco' else 'Mouse grab: spring force',
-    ])

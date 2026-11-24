@@ -14,7 +14,7 @@ from .controls import Controls
 from .viewer import PlayViewer, create_viewer
 
 
-def load_inputs(args: argparse.Namespace) -> tuple[dict, torch.nn.Module, Path]:
+def load_inputs(args: argparse.Namespace) -> tuple[dict, torch.nn.Module, Path, int | None]:
     """Load run artifacts and relocate repository assets copied from another host."""
     training = args.run_dir.resolve()
     if (training / 'training').is_dir():
@@ -51,12 +51,8 @@ def load_inputs(args: argparse.Namespace) -> tuple[dict, torch.nn.Module, Path]:
     # Interactive commands are supplied every step. Keep the task's periodic
     # sampling from replacing the command during a step or normal timeout.
     config['task'].update(command_resample_seconds=1e9, episode_seconds=1e9)
-    # Playback does not produce iteration-indexed assessment artifacts.
-    loading_args = argparse.Namespace(**vars(args))
-    if loading_args.iteration is None:
-        loading_args.iteration = 0
-    policy, path, _ = load_policy(loading_args, training, config)
-    return config, policy, path
+    policy, path, iteration = load_policy(args, training, config, require_iteration=False)
+    return config, policy, path, iteration
 
 
 def run_loop(env: QuadrupedEnv, policy: torch.nn.Module, controls: Controls,
@@ -125,12 +121,13 @@ def main(argv: list[str] | None = None) -> None:
         parser.error('--steps must be positive')
     torch.set_num_threads(2)
     torch.manual_seed(args.seed)
-    config, policy, path = load_inputs(args)
+    config, policy, path, iteration = load_inputs(args)
     ranges = config['task']['command_ranges']
     controls = Controls(max_speed=max(abs(v) for v in ranges[0]),
                         max_yaw=max(abs(v) for v in ranges[2]))
-    controls.publish(backend=args.backend, policy=f'{args.run_dir.name} / {path.name}',
-                     training_ranges=ranges)
+    controls.publish(backend=args.backend, policy=str(path), iteration=iteration,
+                     training_ranges=ranges,
+                     physics=f'Nominal mass and CoM / foot friction {NOMINAL_SLIDING[0]:.1f}')
     env = QuadrupedEnv(config, viewer=args.backend == 'genesis')
     viewer = None
     try:

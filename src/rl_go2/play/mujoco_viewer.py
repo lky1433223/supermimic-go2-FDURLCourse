@@ -9,7 +9,8 @@ import mujoco
 import numpy as np
 
 from rl_go2.backends.mujoco import MujocoBackend
-from .controls import Controls, hud_text
+from .controls import Controls
+from .hud import MARGIN, PANEL, WIDTH, layout_hud
 
 
 def playback_model(model: mujoco.MjModel) -> mujoco.MjModel:
@@ -54,7 +55,8 @@ class MujocoPlayViewer:
         try:
             glfw.make_context_current(self.window)
             glfw.swap_interval(0)
-            self.context = mujoco.MjrContext(self.model, mujoco.mjtFontScale.mjFONTSCALE_150)
+            self.hud_font_scale = 100
+            self.context = mujoco.MjrContext(self.model, self.hud_font_scale)
             glfw.set_key_callback(self.window, self._on_key)
             glfw.set_window_focus_callback(self.window, self._on_focus)
             glfw.set_cursor_pos_callback(self.window, self._on_cursor)
@@ -70,7 +72,7 @@ class MujocoPlayViewer:
         mapping = {glfw.KEY_W: 'w', glfw.KEY_A: 'a', glfw.KEY_S: 's', glfw.KEY_D: 'd',
                    glfw.KEY_UP: 'up', glfw.KEY_DOWN: 'down', glfw.KEY_LEFT: 'left',
                    glfw.KEY_RIGHT: 'right', glfw.KEY_SPACE: 'stop', glfw.KEY_P: 'pause',
-                   glfw.KEY_R: 'reset', glfw.KEY_ESCAPE: 'quit'}
+                   glfw.KEY_R: 'reset', glfw.KEY_ESCAPE: 'quit', glfw.KEY_F1: 'details'}
         if key in mapping:
             if action == glfw.PRESS and mapping[key] in {'pause', 'reset', 'stop', 'quit'}:
                 self.release_forces()
@@ -160,10 +162,36 @@ class MujocoPlayViewer:
         mujoco.mjv_updateScene(self.model, self.data, self.options, self.perturb, self.camera,
                               mujoco.mjtCatBit.mjCAT_ALL, self.scene)
         mujoco.mjr_render(viewport, self.scene, self.context)
-        mujoco.mjr_overlay(mujoco.mjtFont.mjFONT_NORMAL, mujoco.mjtGridPos.mjGRID_TOPLEFT,
-                           viewport, hud_text(self.controls.status()), '', self.context)
+        self._draw_hud(width, height)
         glfw.swap_buffers(self.window)
         return True
+
+    def _draw_hud(self, width: int, height: int) -> None:
+        panel = layout_hud(self.controls.status())
+        logical_width, _ = glfw.get_window_size(self.window)
+        scale = width / max(1, logical_width)
+        left = round(MARGIN * scale)
+        top = height - left
+        panel_width = round(WIDTH * scale)
+        panel_height = round(panel.height * scale)
+        background = mujoco.MjrRect(left, top - panel_height, panel_width, panel_height)
+        mujoco.mjr_rectangle(background, *(channel / 255 for channel in PANEL))
+        for offset in panel.dividers:
+            divider = mujoco.MjrRect(left + round(16 * scale), top - round(offset * scale),
+                                     panel_width - round(32 * scale), max(1, round(scale)))
+            mujoco.mjr_rectangle(divider, 0.25, 0.32, 0.40, 0.8)
+
+        # Each rectangle sets the GL viewport. Text coordinates use the full framebuffer.
+        mujoco.mjr_rectangle(mujoco.MjrRect(0, 0, width, height), 0, 0, 0, 0)
+        font_scale = min(range(50, 301, 50), key=lambda size: abs(size - 85 * scale))
+        if font_scale != self.hud_font_scale:
+            mujoco.mjr_changeFont(font_scale, self.context)
+            self.hud_font_scale = font_scale
+        for label in panel.labels:
+            font = mujoco.mjtFont.mjFONT_BIG if label.large else mujoco.mjtFont.mjFONT_NORMAL
+            mujoco.mjr_text(font, label.value, self.context,
+                            (left + label.x * scale) / width, (top - label.y * scale) / height,
+                            *(channel / 255 for channel in label.color))
 
     def close(self) -> None:
         """Free GL resources while their window context is still current."""

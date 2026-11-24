@@ -195,15 +195,31 @@ class PlayTests(unittest.TestCase):
         np.testing.assert_array_equal(visual.body_mass, model.body_mass)
 
     def test_hud_exposes_speed_command_and_pause(self):
-        from rl_go2.play.controls import hud_text
+        from rl_go2.play.hud import layout_hud
 
         controls = Controls(0.8, 0.5)
-        controls.publish(command=[0.4, -0.2], actual=[0.3, -0.1], seconds=2.0)
-        text = hud_text(controls.status())
-        self.assertIn('Command vx/yaw +0.40 / -0.20', text)
-        self.assertIn('Actual  vx/yaw +0.30 / -0.10', text)
+        controls.publish(backend='mujoco', policy='path/to/policy.pt',
+                         command=[0.4, -0.2], actual=[0.3, -0.1], seconds=2.0)
+        compact = layout_hud(controls.status())
+        values = [label.value for label in compact.labels]
+        self.assertIn('+0.40', values)
+        self.assertIn('+0.30', values)
+        self.assertIn('No grab', values)
+        self.assertNotIn('path/to/policy.pt', values)
+
         controls.key_event('pause', True)
-        self.assertIn('PAUSED', hud_text(controls.status()))
+        controls.key_event('details', True)
+        controls.key_event('details', True, repeat=True)
+        details = layout_hud(controls.status())
+        values = [label.value for label in details.labels]
+        self.assertIn('PAUSED', values)
+        self.assertIn('path/to/policy.pt', values)
+        self.assertGreater(details.height, compact.height)
+
+        controls.publish(mouse_body='base', mouse_force_n=80.0)
+        active = layout_hud(controls.status())
+        self.assertIn('80.0 N', [label.value for label in active.labels])
+        self.assertGreater(active.height, details.height)
 
     def test_relocates_icc_assets_without_changing_source(self):
         from rl_go2.config import load_experiment
@@ -221,7 +237,7 @@ class PlayTests(unittest.TestCase):
             args = argparse.Namespace(run_dir=Path(directory), backend='mujoco', device='cpu',
                                       seed=1, iteration=None, checkpoint=None, policy=None)
             with patch('rl_go2.play.runner.load_policy', return_value=(None, training / 'policy.pt', 0)):
-                loaded, _, _ = load_inputs(args)
+                loaded, _, _, _ = load_inputs(args)
             local = next(e for e in loaded['scene']['entities'] if e.get('robot'))
             self.assertEqual(local['file'], str(repo / 'assets/robots/go2/go2.xml'))
             self.assertEqual(json.loads(source.read_text()), original)

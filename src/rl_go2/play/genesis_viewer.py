@@ -3,7 +3,8 @@ import pyglet
 from pyglet.window import key, mouse
 from genesis.vis.viewer_plugins import EVENT_HANDLED, MouseInteractionPlugin, ViewerPlugin
 
-from .controls import Controls, hud_text
+from .controls import Controls
+from .hud import MARGIN, PANEL, WIDTH, layout_hud
 
 
 class ForceDragPlugin(MouseInteractionPlugin):
@@ -26,11 +27,13 @@ class PlaybackPlugin(ViewerPlugin):
     def __init__(self, controls: Controls):
         super().__init__()
         self.controls = controls
-        self.label = None
+        self.background = None
+        self.dividers: list[pyglet.shapes.Rectangle] = []
+        self.labels: list[pyglet.text.Label] = []
         self.held: set[int] = set()
         self.mapping = {key.W: 'w', key.A: 'a', key.S: 's', key.D: 'd',
                         key.UP: 'up', key.DOWN: 'down', key.LEFT: 'left', key.RIGHT: 'right',
-                        key.SPACE: 'stop', key.P: 'pause', key.R: 'reset', key.ESCAPE: 'quit'}
+                        key.SPACE: 'stop', key.P: 'pause', key.R: 'reset', key.ESCAPE: 'quit', key.F1: 'details'}
 
     def on_key_press(self, symbol: int, modifiers: int) -> bool | None:
         if symbol not in self.mapping:
@@ -52,21 +55,38 @@ class PlaybackPlugin(ViewerPlugin):
         self.controls.clear_keys()
 
     def on_draw(self) -> None:
-        if self.label is None:
-            self.label = pyglet.text.Label(
-                '', font_name='Menlo', font_size=12, x=16, y=0,
-                width=1000, multiline=True, anchor_y='top',
-                color=(255, 255, 255, 255))
-        self.label.y = self.viewer.height - 16
-        self.label.width = max(100, self.viewer.width - 32)
-        self.label.text = hud_text(self.controls.status())
-        self.label.draw()
+        panel = layout_hud(self.controls.status())
+        top = self.viewer.height - MARGIN
+        if self.background is None:
+            self.background = pyglet.shapes.Rectangle(MARGIN, 0, WIDTH, 0, color=PANEL)
+        self.background.y = top - panel.height
+        self.background.height = panel.height
+        self.background.draw()
+        while len(self.dividers) < len(panel.dividers):
+            self.dividers.append(pyglet.shapes.Rectangle(
+                MARGIN + 16, 0, WIDTH - 32, 1, color=(64, 82, 102, 204)))
+        for divider, offset in zip(self.dividers, panel.dividers):
+            divider.y = top - offset
+            divider.draw()
+        while len(self.labels) < len(panel.labels):
+            self.labels.append(pyglet.text.Label('', font_name='Menlo', font_size=10))
+        for label, entry in zip(self.labels, panel.labels):
+            label.x = MARGIN + entry.x
+            label.y = top - entry.y
+            label.font_size = 12 if entry.large else 10
+            label.color = (*entry.color, 255)
+            label.text = entry.value
+            label.draw()
 
     def on_close(self) -> None:
         self.controls.clear_keys()
-        if self.label is not None:
-            self.label.delete()
-            self.label = None
+        if self.background is not None:
+            self.background.delete()
+            self.background = None
+        for item in (*self.labels, *self.dividers):
+            item.delete()
+        self.labels.clear()
+        self.dividers.clear()
 
 
 class GenesisPlayViewer:

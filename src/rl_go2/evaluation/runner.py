@@ -11,7 +11,7 @@ from .executor import execute_plan
 from .push_events import build_push_events
 
 
-def load_policy(args, training, config):
+def load_policy(args, training, config, *, require_iteration: bool = True):
     import torch
 
     path = (args.checkpoint or args.policy or training / 'policy.pt').resolve()
@@ -32,7 +32,7 @@ def load_policy(args, training, config):
         candidates = [path] if args.checkpoint else training.glob('model_*.pt')
         iteration = max((int(p.stem[6:]) for p in candidates
                          if p.stem.startswith('model_') and p.stem[6:].isdigit()), default=None)
-    if iteration is None:
+    if iteration is None and require_iteration:
         raise ValueError('Specify --iteration when the checkpoint iteration cannot be inferred')
     return policy.to(args.device).eval(), path, iteration
 
