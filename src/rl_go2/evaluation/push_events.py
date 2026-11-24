@@ -17,10 +17,11 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class PushSpec:
-    """Force magnitude and target class declared by an evaluation condition."""
+    """Force magnitude, duration, and target class for an evaluation condition."""
 
     target: str
     force_n: float
+    duration_seconds: float = 0.20
 
 
 @dataclass(frozen=True)
@@ -62,7 +63,7 @@ def sample_event(config: dict, geometry: Go2PushGeometry, dt: float, trial: 'Tri
 
     stop = trial.motion.stop_at_seconds
     start = round((5.0 if stop is None else stop + 2.0) / dt)
-    end = start + max(1, round(0.20 / dt))
+    end = start + max(1, round(spec.duration_seconds / dt))
     if end >= math.ceil(trial.motion.duration_seconds / dt):
         raise ValueError(f'{trial.name} must leave time for recovery after the push')
     return PushEvent(start, end, link, point, tuple(axis * spec.force_n for axis in direction))

@@ -33,6 +33,8 @@ class EvaluationCondition:
                 raise ValueError('Point push target must be base or foot')
             if not 0 < self.point_push.force_n < float('inf'):
                 raise ValueError('Point push force must be finite and positive')
+            if not 0 < self.point_push.duration_seconds < float('inf'):
+                raise ValueError('Point push duration must be finite and positive')
         if self.friction_phases:
             if ranges is None:
                 raise ValueError('Friction phases require enabled foot friction')

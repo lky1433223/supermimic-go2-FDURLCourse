@@ -194,21 +194,25 @@ class EvaluationTests(unittest.TestCase):
     def test_point_push_pairs_share_placement_and_timing(self):
         task = TASKS['point-push']
         plan = task.build_plan()
-        self.assertEqual(len(plan.trials) * len(task.default_seeds), 126)
+        self.assertEqual(len(plan.trials) * len(task.default_seeds), 162)
         self.assertEqual(sum(trial.condition.point_push is None for trial in plan.trials), 6)
         geometry = SimpleNamespace(sample_points=lambda directions: directions + torch.rand(directions.shape))
         config = {'robot': {'base_link': 'base'}}
         for target, levels in (
-            ('base', (('limit', 20.0), ('ood', 30.0), ('80n', 80.0), ('160n', 160.0))),
-            ('foot', (('limit', 8.0), ('ood', 12.0))),
+            ('base', (
+                ('limit', 20.0, 10), ('ood', 30.0, 10),
+                ('80n', 80.0, 10), ('160n', 160.0, 10),
+                ('80n-short', 80.0, 5), ('160n-short', 160.0, 5),
+            )),
+            ('foot', (('limit', 8.0, 10), ('ood', 12.0, 10))),
         ):
             events = []
-            for level, magnitude in levels:
+            for level, magnitude, duration_steps in levels:
                 trial = next(trial for trial in plan.trials
                              if trial.condition.name == f'{target}-{level}' and trial.name == 'walk_to_stop')
                 event = sample_event(config, geometry, 0.02, trial, 1)
                 force = torch.tensor(event.force_world_n)
-                self.assertEqual((event.start_step, event.end_step), (500, 510))
+                self.assertEqual((event.start_step, event.end_step), (500, 500 + duration_steps))
                 torch.testing.assert_close(force.norm(), torch.tensor(magnitude))
                 events.append((event, force / magnitude))
             boundary, direction = events[0]
