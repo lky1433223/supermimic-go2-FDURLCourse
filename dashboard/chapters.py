@@ -3,6 +3,7 @@
 import math
 
 from dashboard.artifacts import finite_number
+from dashboard.trial_inputs import trial_inputs
 
 
 def trial_chapters(report: dict, metadata: dict) -> list[dict]:
@@ -54,6 +55,7 @@ def trial_chapters(report: dict, metadata: dict) -> list[dict]:
             'seed': row.get('seed', '—'), 'condition': row.get('condition', ''),
             'motion': row.get('case', ''), 'fell': fell,
             'failed': fell or success is False, 'result': result,
+            'inputs': trial_inputs(row, metadata),
         })
         frame_offset += frame_count
     return chapters
