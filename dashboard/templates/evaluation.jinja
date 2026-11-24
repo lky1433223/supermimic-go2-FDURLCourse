@@ -28,6 +28,59 @@
     <p class="muted directory">{{ item.name }}</p>
   </div>
 </section>
+  <section class="panel body-panel evaluation-metrics">
+    <h2>评测指标</h2>
+    {% if totals[0] is not none %}
+    <dl class="stats">
+      <div><dt>{{ '试次' if report else '套件总试次' }}</dt><dd>{{ totals[0] }}</dd></div>
+      <div><dt>{{ '摔倒' if report else '套件总摔倒' }}</dt><dd>{{ totals[1] }}</dd></div>
+    </dl>
+    {% endif %}
+    {% if report_error %}<p class="warning">{{ report_error }}</p>{% endif %}
+    {% if not report and not report_error %}<p class="muted">该工况暂无单项报告。</p>{% endif %}
+    {% if not has_summary and not cases %}<p class="warning">评测尚未写出结果，或产物目录格式不受支持。</p>{% endif %}
+    <div class="metrics-breakdown">
+    {% set breakdown = report or summary %}
+    {{ counts('按工况', breakdown.get('by_condition')) }}
+    {{ counts('按场景', breakdown.get('by_scene')) }}
+    {{ counts('按动作组', breakdown.get('groups')) }}
+    {% if metadata.get('task') == 'rollout' and breakdown.get('per_case') %}
+    <div class="table-wrap">
+      <table>
+        <caption>Rollout</caption>
+        <thead><tr><th>种子</th><th>步数</th><th>重置次数</th><th>平均总奖励</th></tr></thead>
+        <tbody>
+          {% for row in breakdown.get('per_case') if row is mapping %}
+          <tr>
+            <td>{{ row.get('seed', '—') }}</td><td>{{ row.get('steps', '—') }}</td>
+            <td>{{ row.get('episode_resets', '—') }}</td>
+            <td>{{ '%.3f'|format(row.mean_total_reward) if row.mean_total_reward is number else '—' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+    {% set outcomes = breakdown.get('push_outcomes') %}
+    {% if outcomes is mapping and outcomes %}
+    <div>
+    <h3>受推结果</h3>
+    <dl class="outcomes">
+      {% set labels = {'recovered': '恢复', 'not_recovered': '未恢复', 'fell_after_push_onset': '受推后摔倒', 'fell_before_push': '受推前摔倒'} %}
+      {% for condition, row in outcomes.items() if row is mapping %}
+      <dt>{{ condition }}</dt>
+      <dd>{% for result, count in row.items() %}{{ labels.get(result, result) }} {{ count }}{% if not loop.last %} · {% endif %}{% endfor %}</dd>
+      {% endfor %}
+    </dl>
+    </div>
+    {% endif %}
+    </div>
+    <div class="report-links">
+      {% if selected and selected.assessment %}<a href="{{ request.url_for('artifact', run_name=run_name, iteration=item.iteration, evaluation_name=item.name, kind='assessment').path }}?case={{ selected.name|urlencode }}">逐试次报告 JSON</a>{% endif %}
+      {% if has_summary %}<a href="{{ request.url_for('artifact', run_name=run_name, iteration=item.iteration, evaluation_name=item.name, kind='summary').path }}">汇总 JSON</a>{% endif %}
+      {% if has_config %}<a href="{{ request.url_for('artifact', run_name=run_name, iteration=item.iteration, evaluation_name=item.name, kind='config').path }}">配置 JSON</a>{% endif %}
+    </div>
+  </section>
 <div class="evaluation-layout">
   <section class="panel body-panel">
     <h2>评测回放</h2>
@@ -61,17 +114,39 @@
         <p id="playback-status" role="status" hidden></p>
         <button id="retry-video" type="button" hidden>重新连接并续播</button>
         <noscript><a href="{{ video_url }}">打开回放</a></noscript>
+      </div>
+      <script defer src="{{ request.url_for('static', path='vendor/hls.min.js').path }}"></script>
+      <script defer src="{{ request.url_for('static', path='player.js').path }}"></script>
+    {% else %}
+      <p class="muted">该工况暂无可播放的回放。</p>
+    {% endif %}
+  </section>
+
+  {% if selected and selected.video %}
+  <aside class="panel body-panel chapter-panel" aria-label="回放导航">
+    <h2>逐试次跳转</h2>
         {% if chapters %}
         <div class="chapter-list table-wrap" aria-label="逐试次跳转">
           <table>
-            <caption>逐试次跳转</caption>
+            <caption class="sr-only">逐试次跳转</caption>
             <thead><tr><th>试次 / 时间</th><th>种子</th><th>工况 / 动作</th><th>结果</th></tr></thead>
             <tbody>
               {% for chapter in chapters %}
               <tr>
                 <td><button type="button" data-chapter-start="{{ chapter.start }}" aria-label="播放第 {{ chapter.number }} 次测试">第 {{ chapter.number }} 次 · {{ chapter.time }}</button></td>
                 <td>{{ chapter.seed }}</td>
-                <td>{{ chapter.condition }}<span class="subline">{{ chapter.motion }}</span></td>
+                <td>{{ chapter.condition }}<span class="subline">{{ chapter.motion }}</span>
+                  <details class="trial-inputs">
+                    <summary>测试输入</summary>
+                    <dl>
+                      {% for label, value in chapter.inputs %}
+                      <dt>{{ label }}</dt><dd>{{ value }}</dd>
+                      {% else %}
+                      <dt>该报告未记录详细输入。</dt>
+                      {% endfor %}
+                    </dl>
+                  </details>
+                </td>
                 <td{% if chapter.fell %} class="warning"{% endif %}>{{ chapter.result }}</td>
               </tr>
               {% endfor %}
@@ -81,61 +156,7 @@
         {% elif report %}
         <p class="muted">该报告缺少可用于定位的逐试次录像时间信息。</p>
         {% endif %}
-      </div>
-      <script defer src="{{ request.url_for('static', path='vendor/hls.min.js').path }}"></script>
-      <script defer src="{{ request.url_for('static', path='player.js').path }}"></script>
-    {% else %}
-      <p class="muted">该工况暂无可播放的回放。</p>
-    {% endif %}
-  </section>
-  <section class="panel body-panel">
-    <h2>评测指标</h2>
-    {% if totals[0] is not none %}
-    <dl class="stats">
-      <div><dt>{{ '试次' if report else '套件总试次' }}</dt><dd>{{ totals[0] }}</dd></div>
-      <div><dt>{{ '摔倒' if report else '套件总摔倒' }}</dt><dd>{{ totals[1] }}</dd></div>
-    </dl>
-    {% endif %}
-    {% if report_error %}<p class="warning">{{ report_error }}</p>{% endif %}
-    {% if not report and not report_error %}<p class="muted">该工况暂无单项报告。</p>{% endif %}
-    {% if not has_summary and not cases %}<p class="warning">评测尚未写出结果，或产物目录格式不受支持。</p>{% endif %}
-    {% set breakdown = report or summary %}
-    {{ counts('按工况', breakdown.get('by_condition')) }}
-    {{ counts('按场景', breakdown.get('by_scene')) }}
-    {{ counts('按动作组', breakdown.get('groups')) }}
-    {% if metadata.get('task') == 'rollout' and breakdown.get('per_case') %}
-    <div class="table-wrap">
-      <table>
-        <caption>Rollout</caption>
-        <thead><tr><th>种子</th><th>步数</th><th>重置次数</th><th>平均总奖励</th></tr></thead>
-        <tbody>
-          {% for row in breakdown.get('per_case') if row is mapping %}
-          <tr>
-            <td>{{ row.get('seed', '—') }}</td><td>{{ row.get('steps', '—') }}</td>
-            <td>{{ row.get('episode_resets', '—') }}</td>
-            <td>{{ '%.3f'|format(row.mean_total_reward) if row.mean_total_reward is number else '—' }}</td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-    {% endif %}
-    {% set outcomes = breakdown.get('push_outcomes') %}
-    {% if outcomes is mapping and outcomes %}
-    <h3>受推结果</h3>
-    <dl class="outcomes">
-      {% set labels = {'recovered': '恢复', 'not_recovered': '未恢复', 'fell_after_push_onset': '受推后摔倒', 'fell_before_push': '受推前摔倒'} %}
-      {% for condition, row in outcomes.items() if row is mapping %}
-      <dt>{{ condition }}</dt>
-      <dd>{% for result, count in row.items() %}{{ labels.get(result, result) }} {{ count }}{% if not loop.last %} · {% endif %}{% endfor %}</dd>
-      {% endfor %}
-    </dl>
-    {% endif %}
-    <div class="report-links">
-      {% if selected and selected.assessment %}<a href="{{ request.url_for('artifact', run_name=run_name, iteration=item.iteration, evaluation_name=item.name, kind='assessment').path }}?case={{ selected.name|urlencode }}">逐试次报告 JSON</a>{% endif %}
-      {% if has_summary %}<a href="{{ request.url_for('artifact', run_name=run_name, iteration=item.iteration, evaluation_name=item.name, kind='summary').path }}">汇总 JSON</a>{% endif %}
-      {% if has_config %}<a href="{{ request.url_for('artifact', run_name=run_name, iteration=item.iteration, evaluation_name=item.name, kind='config').path }}">配置 JSON</a>{% endif %}
-    </div>
-  </section>
+  </aside>
+  {% endif %}
 </div>
 {% endblock %}

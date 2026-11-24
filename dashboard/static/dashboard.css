@@ -54,7 +54,10 @@ input[type="checkbox"] { accent-color: var(--accent); }
 button { cursor: pointer; }
 button:hover { border-color: var(--accent); }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-.evaluation-layout { display: grid; grid-template-columns: minmax(0, 1.75fr) minmax(0, 1fr); gap: 1rem; align-items: start; }
+.evaluation-metrics { margin-bottom: 1rem; }
+.metrics-breakdown { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr)); gap: 1rem; align-items: start; }
+.evaluation-layout { display: grid; grid-template-columns: minmax(0, 1.75fr) minmax(390px, 1fr); gap: 1rem; align-items: start; }
+.chapter-panel { position: sticky; top: 1rem; }
 .case-select { margin-block: .75rem; }
 .case-select select { min-width: 0; }
 .player > label { display: block; margin-block: .75rem; }
@@ -69,16 +72,26 @@ video { display: block; width: 100%; aspect-ratio: 16 / 9; max-height: 75vh; }
 .outcomes dt { overflow-wrap: anywhere; }
 .outcomes dd { margin: 0; color: var(--muted); }
 .report-links { margin-top: 1rem; }
-.chapter-list { max-height: 22rem; margin-top: 1rem; }
+.chapter-list { max-height: calc(100vh - 8rem); overflow: auto; margin-top: 1rem; }
+.chapter-list thead { position: sticky; top: 0; background: var(--panel); z-index: 1; }
+.chapter-list th, .chapter-list td { padding: .6rem .45rem; }
+.chapter-list td:nth-child(3) { white-space: normal; overflow-wrap: anywhere; }
 .chapter-list caption { margin-top: 0; }
 .chapter-list button { white-space: nowrap; }
 .chapter-list button[aria-current="true"] { border-color: var(--accent); color: var(--accent); }
+.trial-inputs { margin-top: .4rem; font-size: .85rem; }
+.trial-inputs summary { cursor: pointer; color: var(--accent); }
+.trial-inputs dl { margin: .5rem 0; min-width: 12rem; }
+.trial-inputs dt { color: var(--muted); margin-top: .5rem; }
+.trial-inputs dd { margin: .1rem 0 0; white-space: pre-line; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 #training-chart { display: block; width: 100%; height: 12rem; margin-top: .75rem; }
 .error-page { max-width: 38rem; }
 [hidden] { display: none !important; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-@media (max-width: 800px) {
+@media (max-width: 1000px) {
   .evaluation-layout { grid-template-columns: 1fr; }
+  .chapter-panel { position: static; }
+  .chapter-list { max-height: 28rem; }
 }
 @media (max-width: 550px) {
   .container { width: calc(100% - 1.5rem); }
