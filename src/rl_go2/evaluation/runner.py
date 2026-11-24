@@ -61,7 +61,7 @@ def run_evaluation(args, task):
     policy, weight_path, iteration = load_policy(args, training, config)
     with weight_path.open('rb') as stream:
         digest = file_digest(stream, 'sha256').hexdigest()
-    seeds = args.seeds or ([config['seed']] if task.TASK == 'rollout' else [1])
+    seeds = args.seeds or [1]
     host = socket.gethostname()
     machine = 'icc' if output_root.is_relative_to(Path('/home/lky/RL-Go2')) else host.split('.')[0]
     common = {

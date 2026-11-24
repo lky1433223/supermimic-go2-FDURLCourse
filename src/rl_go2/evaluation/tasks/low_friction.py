@@ -1,116 +1,29 @@
-"""Velocity tracking under four explicit low-friction conditions."""
-from ..conditions import EvaluationCondition
-from ..motion_tasks import MotionTask
+"""Compare fixed foot friction across shared motions and body samples."""
+from ..conditions import NOMINAL_SLIDING, PHYSICAL_SAMPLES
+from ..motion_tasks import FRICTION_MOTIONS
 from ..task import EvaluationTask
+
+
+# Sliding coefficients are ordered FL, FR, RL, RR.
+SLIDING_CONDITIONS = (
+    ('fixed', NOMINAL_SLIDING),
+    ('uniform-01', (0.1, 0.1, 0.1, 0.1)),
+    ('uniform-02', (0.2, 0.2, 0.2, 0.2)),
+    ('left-low', (0.1, 0.6, 0.2, 0.8)),
+    ('right-low', (0.6, 0.1, 0.8, 0.2)),
+)
 
 
 class LowFrictionTask(EvaluationTask):
     TASK = 'low-friction'
-    TASK_DESCRIPTION = 'Run 27 tracking cases under each of four low-friction conditions.'
+    TASK_DESCRIPTION = 'Run six motions under five fixed friction settings and three body samples.'
 
-    conditions = (
-        EvaluationCondition(
-            name='uniform-01',
-            foot_ground_friction={
-                'enabled': True,
-                'env_multiplier_range': [1.0, 1.0],
-                'base_ranges': {
-                    'FR': {'sliding': [0.1, 0.1], 'torsional': [0.02, 0.02], 'rolling': [0.01, 0.01]},
-                    'FL': {'sliding': [0.1, 0.1], 'torsional': [0.02, 0.02], 'rolling': [0.01, 0.01]},
-                    'RR': {'sliding': [0.1, 0.1], 'torsional': [0.02, 0.02], 'rolling': [0.01, 0.01]},
-                    'RL': {'sliding': [0.1, 0.1], 'torsional': [0.02, 0.02], 'rolling': [0.01, 0.01]},
-                },
-            },
-            base_mass={'enabled': True, 'scale_range': [0.9, 1.1]},
-            base_com={'enabled': True, 'offset_ranges_m': {
-                'x': [-0.01, 0.01], 'y': [-0.03, 0.03], 'z': [-0.01, 0.01],
-            }},
-        ),
-        EvaluationCondition(
-            name='uniform-02',
-            foot_ground_friction={
-                'enabled': True,
-                'env_multiplier_range': [1.0, 1.0],
-                'base_ranges': {
-                    'FR': {'sliding': [0.2, 0.2], 'torsional': [0.02, 0.02], 'rolling': [0.01, 0.01]},
-                    'FL': {'sliding': [0.2, 0.2], 'torsional': [0.02, 0.02], 'rolling': [0.01, 0.01]},
-                    'RR': {'sliding': [0.2, 0.2], 'torsional': [0.02, 0.02], 'rolling': [0.01, 0.01]},
-                    'RL': {'sliding': [0.2, 0.2], 'torsional': [0.02, 0.02], 'rolling': [0.01, 0.01]},
-                },
-            },
-            base_mass={'enabled': True, 'scale_range': [0.9, 1.1]},
-            base_com={'enabled': True, 'offset_ranges_m': {
-                'x': [-0.01, 0.01], 'y': [-0.03, 0.03], 'z': [-0.01, 0.01],
-            }},
-        ),
-        EvaluationCondition(
-            name='left-low',
-            foot_ground_friction={
-                'enabled': True,
-                'env_multiplier_range': [1.0, 1.0],
-                'base_ranges': {
-                    'FR': {'sliding': [0.6, 0.6], 'torsional': [0.02, 0.02], 'rolling': [0.01, 0.01]},
-                    'FL': {'sliding': [0.1, 0.1], 'torsional': [0.02, 0.02], 'rolling': [0.01, 0.01]},
-                    'RR': {'sliding': [0.8, 0.8], 'torsional': [0.02, 0.02], 'rolling': [0.01, 0.01]},
-                    'RL': {'sliding': [0.2, 0.2], 'torsional': [0.02, 0.02], 'rolling': [0.01, 0.01]},
-                },
-            },
-            base_mass={'enabled': True, 'scale_range': [0.9, 1.1]},
-            base_com={'enabled': True, 'offset_ranges_m': {
-                'x': [-0.01, 0.01], 'y': [-0.03, 0.03], 'z': [-0.01, 0.01],
-            }},
-        ),
-        EvaluationCondition(
-            name='right-low',
-            foot_ground_friction={
-                'enabled': True,
-                'env_multiplier_range': [1.0, 1.0],
-                'base_ranges': {
-                    'FR': {'sliding': [0.1, 0.1], 'torsional': [0.02, 0.02], 'rolling': [0.01, 0.01]},
-                    'FL': {'sliding': [0.6, 0.6], 'torsional': [0.02, 0.02], 'rolling': [0.01, 0.01]},
-                    'RR': {'sliding': [0.2, 0.2], 'torsional': [0.02, 0.02], 'rolling': [0.01, 0.01]},
-                    'RL': {'sliding': [0.8, 0.8], 'torsional': [0.02, 0.02], 'rolling': [0.01, 0.01]},
-                },
-            },
-            base_mass={'enabled': True, 'scale_range': [0.9, 1.1]},
-            base_com={'enabled': True, 'offset_ranges_m': {
-                'x': [-0.01, 0.01], 'y': [-0.03, 0.03], 'z': [-0.01, 0.01],
-            }},
-        ),
+    conditions = tuple(
+        sample.condition(f'{sample.name}-{name}', sliding)
+        for sample in PHYSICAL_SAMPLES
+        for name, sliding in SLIDING_CONDITIONS
     )
-    motions = {
-        'standard': (
-            MotionTask('vx0.2_yaw0', 0.2),
-            MotionTask('vx0.2_yaw0.4', 0.2, 0.4),
-            MotionTask('vx0.2_yaw-0.4', 0.2, -0.4),
-            MotionTask('vx0.4_yaw0', 0.4),
-            MotionTask('vx0.4_yaw0.4', 0.4, 0.4),
-            MotionTask('vx0.4_yaw-0.4', 0.4, -0.4),
-            MotionTask('vx0.6_yaw0', 0.6),
-            MotionTask('vx0.6_yaw0.4', 0.6, 0.4),
-            MotionTask('vx0.6_yaw-0.4', 0.6, -0.4),
-            MotionTask('vx0.8_yaw0', 0.8),
-            MotionTask('vx0.8_yaw0.4', 0.8, 0.4),
-            MotionTask('vx0.8_yaw-0.4', 0.8, -0.4),
-            MotionTask('vx0.5_yaw0', 0.5),
-            MotionTask('vx0.5_yaw0.1', 0.5, 0.1),
-            MotionTask('vx0.5_yaw-0.1', 0.5, -0.1),
-            MotionTask('vx0.5_yaw0.3', 0.5, 0.3),
-            MotionTask('vx0.5_yaw-0.3', 0.5, -0.3),
-            MotionTask('vx0.5_yaw0.5', 0.5, 0.5),
-            MotionTask('vx0.5_yaw-0.5', 0.5, -0.5),
-        ),
-        'ood': (
-            MotionTask('stand', 0),
-            MotionTask('walk_to_stop', 0.5, stop_at_seconds=8),
-            MotionTask('vx1.0_yaw0', 1.0),
-            MotionTask('vx1.2_yaw0', 1.2),
-            MotionTask('vx0.5_yaw0.6', 0.5, 0.6),
-            MotionTask('vx0.5_yaw-0.6', 0.5, -0.6),
-            MotionTask('vx0.5_yaw0.8', 0.5, 0.8),
-            MotionTask('vx0.5_yaw-0.8', 0.5, -0.8),
-        ),
-    }
+    motions = {'tracking': FRICTION_MOTIONS}
 
     metrics = 'tracking'
     report = {

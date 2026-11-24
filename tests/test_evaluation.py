@@ -4,7 +4,7 @@ import unittest
 
 import torch
 
-from rl_go2.evaluation.conditions import EvaluationCondition
+from rl_go2.evaluation.conditions import EvaluationCondition, PHYSICAL_SAMPLES, PhysicalSample
 from rl_go2.evaluation.executor import execute_trial
 from rl_go2.evaluation.motion_tasks import MotionTask
 from rl_go2.evaluation.task import Trial
@@ -33,16 +33,23 @@ class EvaluationTests(unittest.TestCase):
     def test_explicit_conditions_and_motion_lists(self):
         standard = TASKS['standard'].build_plan()
         low = TASKS['low-friction'].build_plan()
-        self.assertEqual(len(low.trials), 108)
+        switch = TASKS['friction-switch'].build_plan()
+        rollout = TASKS['rollout'].build_plan()
+        self.assertEqual(len(standard.trials), 81)
+        self.assertEqual(len(low.trials), 90)
+        self.assertEqual(len(switch.trials), 72)
+        self.assertEqual(len(rollout.trials), 1)
+        self.assertEqual(rollout.trials[0].condition, standard.trials[0].condition)
         expected_sliding = {
+            'fixed': [0.8, 0.8, 0.8, 0.8],
             'uniform-01': [0.1, 0.1, 0.1, 0.1],
             'uniform-02': [0.2, 0.2, 0.2, 0.2],
             'left-low': [0.1, 0.6, 0.2, 0.8],
             'right-low': [0.6, 0.1, 0.8, 0.2],
         }
         for name, values in expected_sliding.items():
-            trials = [trial for trial in low.trials if trial.condition.name == name]
-            self.assertEqual([trial.motion for trial in trials], [trial.motion for trial in standard.trials])
+            trials = [trial for trial in low.trials if trial.condition.name == f'nominal-{name}']
+            self.assertEqual([trial.motion for trial in trials], [trial.motion for trial in switch.trials[:6]])
             feet = trials[0].condition.foot_ground_friction['base_ranges']
             self.assertEqual([feet[foot]['sliding'][0] for foot in ('FL', 'FR', 'RL', 'RR')], values)
         self.assertEqual(low.trials[0].condition.base_mass, standard.trials[0].condition.base_mass)
@@ -51,6 +58,23 @@ class EvaluationTests(unittest.TestCase):
         self.assertTrue(effective['domain_randomization']['base_mass']['enabled'])
         self.assertNotIn('unrelated', effective['domain_randomization'])
         self.assertFalse(source['domain_randomization']['base_mass']['enabled'])
+
+    def test_physical_samples_are_reproducible_and_shared(self):
+        for seed, sample in enumerate(PHYSICAL_SAMPLES[1:], 1):
+            self.assertEqual(sample, PhysicalSample.sample(seed))
+            self.assertTrue(0.9 <= sample.mass_scale <= 1.1)
+            self.assertTrue(0.75 <= sample.friction_multiplier <= 1.25)
+            for offset, limit in zip(sample.com_offset_m, (0.01, 0.03, 0.01), strict=True):
+                self.assertLessEqual(abs(offset), limit)
+            baseline = next(condition for condition in TASKS['standard'].conditions
+                            if condition.name == sample.name)
+            for task_name in ('low-friction', 'friction-switch'):
+                conditions = [condition for condition in TASKS[task_name].conditions
+                              if condition.name.startswith(f'{sample.name}-')]
+                self.assertTrue(conditions)
+                for condition in conditions:
+                    self.assertEqual(condition.base_mass, baseline.base_mass)
+                    self.assertEqual(condition.base_com, baseline.base_com)
 
     def test_reset_rule_controls_shared_loop(self):
         for continue_after_reset, expected in ((False, 1), (True, 4)):
@@ -71,9 +95,16 @@ class EvaluationTests(unittest.TestCase):
         stop = next(trial.motion for trial in tracking.trials if trial.name == 'walk_to_stop')
         self.assertEqual(stop.command_schedule(0.02)[400], (0, 0, 0))
         switch = TASKS['friction-switch'].build_plan()
-        schedule = switch.trials[1].condition.phase_schedule(0.02)
-        self.assertEqual({step: phase.multiplier for step, phase in schedule.items()},
-                         {0: 1.0, 250: 0.5, 500: 1.0})
+        for name, expected in (
+            ('nominal-switch', {0: 1.0, 250: 0.5, 500: 1.0}),
+            ('nominal-switch-low', {0: 1.0, 250: 0.25, 500: 1.0}),
+            ('nominal-switch-short', {0: 1.0, 250: 0.25, 350: 1.0}),
+        ):
+            trial = next(trial for trial in switch.trials
+                         if trial.condition.name == name and trial.name == 'walk_to_stop')
+            schedule = trial.condition.phase_schedule(0.02)
+            self.assertEqual({step: phase.multiplier for step, phase in schedule.items()}, expected)
+            self.assertEqual(trial.motion.command_schedule(0.02)[400], (0, 0, 0))
 
 
 if __name__ == '__main__':

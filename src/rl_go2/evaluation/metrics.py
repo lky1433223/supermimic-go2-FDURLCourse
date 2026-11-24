@@ -74,51 +74,51 @@ class TrackingMetrics(TrialMetrics):
         }
 
 
-class FrictionMetrics(TrialMetrics):
+class FrictionMetrics(TrackingMetrics):
     def __init__(self, env, trial):
         import mujoco
 
         super().__init__(env, trial)
         self.schedule = trial.condition.phase_schedule(env.dt)
         self.segments = []
-        self.fell = False
         self.ground = next(i for i, kind in enumerate(env.backend.model.geom_type)
                            if kind == mujoco.mjtGeom.mjGEOM_PLANE)
         self.feet = set(env.backend.foot_ids)
 
     def update(self, env, transition, reward, done, observation, step):
+        super().update(env, transition, reward, done, observation, step)
         if step in self.schedule:
-            self.errors = []
+            self.phase_start = step
             self.contacts = set()
             ratio = self.schedule[step].multiplier
             base = self.trial.condition.foot_ground_friction['base_ranges']['FL']['sliding'][0]
             self.sliding = round(base * ratio, 6)
             self.segments.append({})
-        linear, angular, _ = env.task.body_state(transition.next_state)
-        velocity = torch.cat((linear[0, :2], angular[0, 2:3]))
-        self.errors.append((velocity - transition.context['commands'][0]).square())
-        for contact in env.backend.data.contact:
-            if (contact.efc_address >= 0 and self.ground in contact.geom
-                    and any(geom in self.feet for geom in contact.geom)):
-                self.contacts.add(round(float(contact.friction[0]), 6))
-        self.fell = transition.terminated.item()
+        # The simulator has already reset on a terminal step.
+        if not done[0].item():
+            for contact in env.backend.data.contact:
+                if (contact.efc_address >= 0 and self.ground in contact.geom
+                        and any(geom in self.feet for geom in contact.geom)):
+                    self.contacts.add(round(float(contact.friction[0]), 6))
         # Finalize each phase at its last sample, including early termination.
         next_boundary = step + 1 in self.schedule
         last_step = step + 1 == round(self.trial.motion.duration_seconds / env.dt)
-        if next_boundary or self.fell or transition.truncated.item() or last_step:
+        if next_boundary or done[0].item() or last_step:
+            phase_errors = self.errors[self.phase_start:]
             self.segments[-1] = {
-                'seconds': len(self.errors) * env.dt, 'sliding': self.sliding,
+                'seconds': len(phase_errors) * env.dt, 'sliding': self.sliding,
                 'contact_sliding': sorted(self.contacts), 'contact_matches': self.contacts == {self.sliding},
-                'velocity_rmse': torch.stack(self.errors).mean(0).sqrt().tolist(),
+                'velocity_rmse': torch.stack(phase_errors).mean(0).sqrt().tolist(),
             }
 
     def label(self, seed):
-        return f'Seed {seed} | {self.trial.condition.name} | friction {self.sliding:.2f}'
+        return f'{super().label(seed)} | friction {self.sliding:.2f}'
 
     def finish(self, env):
-        seconds = sum(segment['seconds'] for segment in self.segments)
-        return {'case': self.trial.condition.name, 'fell': self.fell, 'seconds': seconds,
-                'fall_time_seconds': seconds if self.fell else None, 'segments': self.segments}
+        result = super().finish(env)
+        result['command_segments'] = result['segments']
+        result['segments'] = self.segments
+        return result
 
 
 class RolloutMetrics(TrialMetrics):

@@ -1,29 +1,16 @@
 """Standard velocity tracking under explicitly declared physical conditions."""
-from ..conditions import EvaluationCondition
+from ..conditions import NOMINAL_SLIDING, PHYSICAL_SAMPLES
 from ..motion_tasks import MotionTask
 from ..task import EvaluationTask
 
 
 class StandardTask(EvaluationTask):
     TASK = 'standard'
-    TASK_DESCRIPTION = 'Run 27 velocity tracking, turning, and stopping cases per seed.'
+    TASK_DESCRIPTION = 'Run 27 tracking motions under each of three physical samples.'
 
-    conditions = (
-        EvaluationCondition(
-            name='nominal',
-            foot_ground_friction={
-                'enabled': True,
-                'env_multiplier_range': [0.75, 1.25],
-                'base_ranges': {
-                    foot: {'sliding': [0.8, 0.8], 'torsional': [0.02, 0.02], 'rolling': [0.01, 0.01]}
-                    for foot in ('FR', 'FL', 'RR', 'RL')
-                },
-            },
-            base_mass={'enabled': True, 'scale_range': [0.9, 1.1]},
-            base_com={'enabled': True, 'offset_ranges_m': {
-                'x': [-0.01, 0.01], 'y': [-0.03, 0.03], 'z': [-0.01, 0.01],
-            }},
-        ),
+    conditions = tuple(
+        sample.condition(sample.name, NOMINAL_SLIDING, friction_multiplier=sample.friction_multiplier)
+        for sample in PHYSICAL_SAMPLES
     )
     motions = {
         'standard': (

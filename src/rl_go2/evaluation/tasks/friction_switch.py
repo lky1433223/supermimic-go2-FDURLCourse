@@ -1,47 +1,33 @@
-"""Straight walking under fixed and timed friction conditions."""
-from ..conditions import EvaluationCondition, FrictionPhase
-from ..motion_tasks import MotionTask
+"""Compare timed friction changes across shared motions and body samples."""
+from ..conditions import FrictionPhase, NOMINAL_SLIDING, PHYSICAL_SAMPLES
+from ..motion_tasks import FRICTION_MOTIONS
 from ..task import EvaluationTask
+
+
+FRICTION_SCHEDULES = (
+    ('fixed', (FrictionPhase(5, 1.0), FrictionPhase(5, 1.0), FrictionPhase(10, 1.0))),
+    ('switch', (FrictionPhase(5, 1.0), FrictionPhase(5, 0.5), FrictionPhase(10, 1.0))),
+    ('switch-low', (FrictionPhase(5, 1.0), FrictionPhase(5, 0.25), FrictionPhase(10, 1.0))),
+    ('switch-short', (FrictionPhase(5, 1.0), FrictionPhase(2, 0.25), FrictionPhase(13, 1.0))),
+)
 
 
 class FrictionSwitchTask(EvaluationTask):
     TASK = 'friction-switch'
-    TASK_DESCRIPTION = 'Compare fixed friction with a timed 0.8 to 0.4 to 0.8 change.'
+    TASK_DESCRIPTION = 'Run six motions under four friction schedules and three body samples.'
 
-    conditions = (
-        EvaluationCondition(
-            name='fixed',
-            foot_ground_friction={
-                'enabled': True,
-                'env_multiplier_range': [1.0, 1.0],
-                'base_ranges': {
-                    foot: {'sliding': [0.8, 0.8], 'torsional': [0.02, 0.02], 'rolling': [0.01, 0.01]}
-                    for foot in ('FR', 'FL', 'RR', 'RL')
-                },
-            },
-            base_mass={'enabled': False},
-            base_com={'enabled': False},
-            friction_phases=(FrictionPhase(5, 1.0), FrictionPhase(5, 1.0), FrictionPhase(5, 1.0)),
-        ),
-        EvaluationCondition(
-            name='switch',
-            foot_ground_friction={
-                'enabled': True,
-                'env_multiplier_range': [1.0, 1.0],
-                'base_ranges': {
-                    foot: {'sliding': [0.8, 0.8], 'torsional': [0.02, 0.02], 'rolling': [0.01, 0.01]}
-                    for foot in ('FR', 'FL', 'RR', 'RL')
-                },
-            },
-            base_mass={'enabled': False},
-            base_com={'enabled': False},
-            friction_phases=(FrictionPhase(5, 1.0), FrictionPhase(5, 0.5), FrictionPhase(5, 1.0)),
-        ),
+    conditions = tuple(
+        sample.condition(f'{sample.name}-{name}', NOMINAL_SLIDING, friction_phases=phases)
+        for sample in PHYSICAL_SAMPLES
+        for name, phases in FRICTION_SCHEDULES
     )
-    motions = {'': (MotionTask('forward_0.5', 0.5, yaw_rate=0, duration_seconds=15),)}
+    motions = {'tracking': FRICTION_MOTIONS}
     metrics = 'friction'
-    report = {'command': [0.5, 0, 0], 'segment_seconds': 5}
-    episode_seconds = 16
+    report = {
+        'velocity_axes': ['vx', 'vy', 'yaw_rate'], 'case_seconds': 20,
+        'stop_criteria': {'planar_speed_m_s': 0.1, 'abs_yaw_rad_s': 0.15, 'hold_seconds': 0.5},
+    }
+    episode_seconds = 20
     continue_after_reset = False
-    reset_before_start = False
+    reset_before_start = True
     backends = ('mujoco',)

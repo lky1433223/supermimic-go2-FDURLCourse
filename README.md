@@ -50,7 +50,10 @@ ICC 无窗口录制使用 `MUJOCO_GL=egl`。显式 `--output` 指向本次评测
 uv run --extra train python scripts/evaluate.py --run-dir output/flat-supermimic-guided-001 --task standard
 ```
 
-每个种子跑 27 项，横向速度指令固定为 0。速度单位为 m/s，转向单位为 rad/s。
+每组物理参数跑 27 项，横向速度指令固定为 0。速度单位为 m/s，转向单位为 rad/s。
+标称组使用零质心偏移、标称质量与惯量和四脚滑动摩擦 0.8。另有两个以固定种子抽出的物理样本，
+质心 X/Y/Z 偏移范围为 ±1/±3/±1 cm，质量倍率为 0.9–1.1，四脚共用摩擦倍率为 0.75–1.25。
+这些样本在所有动作中保持固定，每个评测种子共跑 81 项。
 
 | 组别 | 前进速度 | 转向速度 | 项数 |
 | --- | --- | --- | --- |
@@ -67,10 +70,10 @@ uv run --extra train python scripts/evaluate.py --run-dir output/flat-supermimic
 
 ### 固定低摩擦评测
 
-`low-friction` 在 `tasks/low_friction.py` 中显式列出四组工况，每组各跑 27 项，每个种子共 108 项。
-四组分别是四脚统一 0.1、统一 0.2、左侧低摩擦和右侧低摩擦。左右侧低摩擦的四脚系数也直接列在文件中。
-各组质量倍率 0.9–1.1，质心 X/Z 偏移各 ±1 cm、Y 偏移 ±3 cm，都在该文件里声明。
-修改 `conditions` 即可复测其他工况，多个工况会分别执行整张动作列表。
+`low-friction` 使用五组固定滑动摩擦：四脚统一 0.8、0.1、0.2、左侧低摩擦和右侧低摩擦。
+每组跑静站、0.2 m/s 直行、0.5 m/s 直行、以 0.5 m/s 左右各转一次（偏航 ±0.4 rad/s）和走停。
+每项最多 20 秒，走停在第 8 秒清零指令。五组摩擦分别配标称机身和与 `standard` 共享的两个质心和质量样本，
+每个评测种子共 90 项。
 
 ```bash
 uv run --extra train python scripts/evaluate.py --run-dir output/flat-supermimic-guided-001 --task low-friction
@@ -79,11 +82,16 @@ uv run --extra train python scripts/evaluate.py --run-dir output/flat-supermimic
 ### 行进中切换摩擦
 
 摩擦切换对照使用 `python scripts/evaluate.py --task friction-switch --run-dir <训练目录>`。
-两组都以 0.5 m/s 直行，对照组保持滑动摩擦 0.8，切换组每 5 秒依次使用 0.8、0.4、0.8。
-报告记录各阶段实际接触摩擦、跟踪误差和摔倒时间。
+它与 `low-friction` 共用六项动作和三个机身样本。四条滑动摩擦曲线分别是固定 0.8、
+0.8 → 0.4 → 0.8、0.8 → 0.2 → 0.8，以及中间 0.2 只持续 2 秒的短时低摩擦。
+低摩擦都从第 5 秒开始，长段在第 10 秒恢复，短段在第 7 秒恢复。每个评测种子共 72 项。
+报告记录逐项跟踪、走停指标以及各阶段的实际接触摩擦和跟踪误差。
 训练时可在启用 `foot_ground_friction` 后设置 `env_multiplier_range: [0.75, 1.25]` 和
 `switch_interval_seconds: [2.0, 5.0]`。启用定时切换时四脚基础范围须为固定值，
 各环境独立重抽倍率，真实采样和想象 rollout 使用相同的倍率与时长分布。
+
+`rollout` 用于运行检查，固定零质心偏移、标称质量和惯量、四脚滑动摩擦 0.8 和 0.5 m/s 直行。
+默认用种子 1 跑 1000 个控制步，重置后继续至步数上限。
 
 训练启动时会打印绝对输出路径。历史 `runs/` 及当前已有产物保持原位，仍被忽略，不自动迁移。
 

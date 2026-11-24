@@ -29,3 +29,13 @@ class MotionTask:
         if self.stop_at_seconds is not None:
             schedule[round(self.stop_at_seconds / dt)] = (0, 0, 0)
         return schedule
+
+
+FRICTION_MOTIONS = (
+    MotionTask('stand', 0),
+    MotionTask('vx0.2_yaw0', 0.2),
+    MotionTask('vx0.5_yaw0', 0.5),
+    MotionTask('vx0.5_yaw0.4', 0.5, 0.4),
+    MotionTask('vx0.5_yaw-0.4', 0.5, -0.4),
+    MotionTask('walk_to_stop', 0.5, stop_at_seconds=8),
+)
