@@ -3,7 +3,7 @@ import math
 
 import torch
 
-from rl_go2.backends import make_backend
+from rl_go2.backends import LinkPointForces, make_backend
 from rl_go2.config import base_com_offset_ranges, base_mass_scale_range, foot_friction_ranges, foot_friction_switch_seconds
 from rl_go2.control import JointPositionControl
 from rl_go2.curriculum import make_curriculum
@@ -23,6 +23,8 @@ class Transition:
     truncated: torch.Tensor
     previous_action: torch.Tensor
     torque: torch.Tensor
+    # (envs, links, 6), world force and moment about each authored link origin at step start.
+    link_wrenches_world: torch.Tensor | None = None
 
 
 class QuadrupedEnv:
@@ -146,7 +148,14 @@ class QuadrupedEnv:
     def observe(self):
         return self.task.observe(self.state, self.previous_action)
 
-    def step(self, action, *, base_force=None):
+    def step(
+        self,
+        action: torch.Tensor,
+        *,
+        base_force: torch.Tensor | None = None,
+        link_point_forces: LinkPointForces | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict]:
+        """Advance one control step, holding optional point loads over its physics substeps."""
         action = action.detach().to(self.device)
         if action.shape != self.previous_action.shape or not torch.isfinite(action).all():
             raise ValueError(f"Expected finite actions of shape {tuple(self.previous_action.shape)}")
@@ -161,10 +170,21 @@ class QuadrupedEnv:
                 raise ValueError(f"base_force must be finite with shape ({self.num_envs}, 3)")
             if context is not None:
                 context["external_force_world"] = base_force.clone()
+        link_wrenches_world = None
+        if link_point_forces is not None:
+            link_point_forces.validate(self.num_envs, len(self.backend.link_names))
+            link_point_forces = LinkPointForces(
+                link_point_forces.point_local_m.detach().to(self.state.position),
+                link_point_forces.force_world_n.detach().to(self.state.position),
+            )
+            if self.record_transitions:
+                link_wrenches_world = link_point_forces.wrenches_world(self.backend.read_link_quaternions())
         target, clipped_action = self.controller.target(action)
         for _ in range(self.config["robot"]["control_decimation"]):
             torque = self.controller.torque(target, self.state)
-            if base_force is None:
+            if link_point_forces is not None:
+                self.backend.step(torque, base_force=base_force, link_point_forces=link_point_forces)
+            elif base_force is None:
                 self.backend.step(torque)
             else:
                 self.backend.step(torque, base_force=base_force)
@@ -184,7 +204,7 @@ class QuadrupedEnv:
         if self.record_transitions:
             extras["transition"] = Transition(old_state.clone(), clipped_action.clone(), self.state.clone(),
                                                context, terminated.clone(), truncated.clone(),
-                                               old_action, torque.detach().clone())
+                                               old_action, torque.detach().clone(), link_wrenches_world)
         done_ids = done.nonzero(as_tuple=False).flatten()
         if self.friction_switch_steps is not None:
             self.friction_steps_left.sub_(1)

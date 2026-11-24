@@ -3,6 +3,7 @@
 Independent reproduction inspired by Zhengtianjin/go2-supermimic (MIT) and
 Liao et al., arXiv:2610.28480. No mjlab code or task-specific assets are required.
 """
+from collections.abc import Sequence
 from contextlib import closing, contextmanager
 from dataclasses import asdict, dataclass
 from functools import partial
@@ -13,10 +14,12 @@ from time import perf_counter
 
 import torch
 
-from rl_go2.config import MODEL_PARAMETER_KEYS
 from torch import nn
 
+from rl_go2.backends import LinkPointForces
+from rl_go2.config import FOOT_NAMES, MODEL_PARAMETER_KEYS
 from rl_go2.env import QuadrupedEnv
+from rl_go2.point_push import Go2PushGeometry, PointPushConfig, PointPushScheduler, PushState
 from rl_go2.trainers.model_learning import DynamicsModel, ReplayBuffer, RunningNorm, heading, local_state, mlp, pack, unpack
 
 OFFICIAL_REPLAY_RATIO = 16
@@ -60,6 +63,9 @@ class TrainConfig:
     upright_softness: float = 0.03
     save_interval: int = 100
     log_interval: int = 10
+    condition_on_link_wrenches: bool = False
+    init_checkpoint: str | None = None
+    world_model_warmup_iterations: int = 0
 
     @property
     def uses_official_schedule(self):
@@ -69,6 +75,10 @@ class TrainConfig:
         for key in ('tf32', 'fused_adam', 'compile_training', 'cuda_graph'):
             if type(getattr(self, key)) is not bool:
                 raise ValueError(f'{key} must be a boolean')
+        if type(self.condition_on_link_wrenches) is not bool:
+            raise ValueError('condition_on_link_wrenches must be a boolean')
+        if type(self.world_model_warmup_iterations) is not int or self.world_model_warmup_iterations < 0:
+            raise ValueError('world_model_warmup_iterations must be a nonnegative integer')
         integer_fields = ('iterations', 'collect_steps', 'buffer_steps', 'model_window', 'model_batch',
                           'model_updates', 'imagination_batch', 'horizon', 'critic_epochs',
                           'critic_minibatches', 'save_interval', 'log_interval')
@@ -166,7 +176,8 @@ def critic_input(state, previous_action, context, features):
                         if key not in MODEL_PARAMETER_KEYS)), -1)
 
 
-def imagined_step(env, model, actor, cfg, state, previous_action, context):
+def imagined_step(env, model, actor, cfg, state, previous_action, context,
+                  wrenches_world: torch.Tensor | None = None):
     robot = unpack(state)
     features = env.task.model_features(robot, context)
     inputs = None
@@ -175,7 +186,7 @@ def imagined_step(env, model, actor, cfg, state, previous_action, context):
             inputs = critic_input(state, previous_action, context, features)
     action = actor(env.task.observe(robot, previous_action, context))
     _, action = env.controller.target(action)
-    next_state, torque = model(state, action, previous_action, features)
+    next_state, torque = model(state, action, previous_action, features, wrenches_world)
     next_robot = unpack(next_state)
     torque = torque.clamp(-env.controller.limits, env.controller.limits)
     reward = env.task.reward(next_robot, action, previous_action, torque, context)
@@ -196,13 +207,40 @@ def critic_minibatch_loss(critic, inputs, targets):
     return (critic(inputs) - targets).square().mean()
 
 
-def imagined_rollout(env, model, actor, critic, seed, cfg, *, step=None, returns=imagined_return):
+def imagined_rollout(env, model, actor, critic, seed, cfg, *, step=None, returns=imagined_return,
+                     wrench_plan_world: torch.Tensor | None = None,
+                     push_scheduler: PointPushScheduler | None = None):
+    """Roll out a (batch, horizon, links, 6) world-frame wrench plan if supplied.
+
+    A push scheduler continues the event state stored in the seed. Without
+    either a plan or a scheduler, only the initial recorded wrench is applied.
+    """
     if step is None:
         step = partial(imagined_step, env, model, actor, cfg)
     state, previous_action, context = seed['state'], seed['previous_action'], context_from(seed)
+    initial_wrenches = seed.get('link_wrenches_world')
+    zero_wrenches = None if initial_wrenches is None else torch.zeros_like(initial_wrenches)
+    push_state = None if push_scheduler is None else PushState.from_replay(seed)
+    if wrench_plan_world is not None:
+        expected_shape = (state.shape[0], cfg.horizon, model.wrench_links, 6)
+        if not model.wrench_links or wrench_plan_world.shape != expected_shape:
+            raise ValueError(f'Expected a wrench-conditioned model and a wrench plan of shape {expected_shape}')
     rewards, continuations, inputs = [], [], []
-    for _ in range(cfg.horizon):
-        state, action, reward, continuation, critic_obs = step(state, previous_action, context)
+    for index in range(cfg.horizon):
+        if wrench_plan_world is not None:
+            wrenches_world = wrench_plan_world[:, index]
+        elif push_state is not None and index > 0:
+            link_quat = push_scheduler.geometry.link_quaternions(unpack(state))
+            # Event sampling is exogenous. The moment arm of an ongoing push
+            # still depends on the differentiable predicted joint positions.
+            push_state = push_scheduler.prepare(push_scheduler.advance(push_state), link_quat.detach())
+            wrenches_world = push_scheduler.wrenches(push_state, link_quat)
+        else:
+            wrenches_world = initial_wrenches if index == 0 else zero_wrenches
+        if wrenches_world is None:
+            state, action, reward, continuation, critic_obs = step(state, previous_action, context)
+        else:
+            state, action, reward, continuation, critic_obs = step(state, previous_action, context, wrenches_world)
         rewards.append(reward)
         continuations.append(continuation)
         if cfg.bootstrap_weight:
@@ -291,14 +329,32 @@ class Trainer:
             raise ValueError(f'Task must implement model-learning hooks: {required}')
         if not env.record_transitions:
             raise ValueError('SuperMimic requires record_transitions=True')
+        self.wrench_link_indices: tuple[int, ...] = ()
+        self.other_link_indices: tuple[int, ...] = ()
+        if cfg.condition_on_link_wrenches:
+            names = (env.config['robot']['base_link'], *(f'{foot}_calf' for foot in FOOT_NAMES))
+            self.wrench_link_indices = tuple(env.backend.link_names.index(name) for name in names)
+            self.other_link_indices = tuple(index for index in range(len(env.backend.link_names))
+                                            if index not in self.wrench_link_indices)
         context = env.model_context()
         features = env.task.model_features(env.state, context)
         state = pack(env.state)
         ci = critic_input(state, env.previous_action, context, features)
         self.actor = Actor(env.observe().shape[-1], env.num_actions, cfg.actor_hidden,
                            env.config['robot']['action_clip']).to(env.device)
-        self.model = DynamicsModel(features.shape[-1], cfg.model_hidden).to(env.device)
+        self.model = DynamicsModel(features.shape[-1], cfg.model_hidden,
+                                   wrench_links=len(self.wrench_link_indices)).to(env.device)
         self.critic = Critic(ci.shape[-1], cfg.critic_hidden).to(env.device)
+        push_spec = PointPushConfig.from_config(env.config)
+        self.push_scheduler: PointPushScheduler | None = None
+        self.push_state: PushState | None = None
+        if push_spec is not None:
+            if not self.wrench_link_indices or env.config['task']['name'] != 'flat_walk':
+                raise ValueError('point_push requires flat_walk and condition_on_link_wrenches')
+            geometry = Go2PushGeometry(env.config, FOOT_NAMES, env.device)
+            self.push_scheduler = PointPushScheduler(push_spec, env.dt, geometry)
+            self.push_state = self.push_scheduler.reset(env.state.position)
+            self.push_link_indices = torch.tensor(self.wrench_link_indices, device=env.device)
         self.model_loss = self.model.loss
         self.graphed_model_backward = None
         self.graphed_actor_backward = None
@@ -330,16 +386,34 @@ class Trainer:
             count = min(env.num_envs - 1, max(1, round(env.num_envs * cfg.driver_fraction)))
             self.driver_mask[-count:] = True
 
+    def _step_for_collection(self, action: torch.Tensor, loads: LinkPointForces | None) -> tuple:
+        if loads is None:
+            return self.env.step(action)
+        loads.validate(self.env.num_envs, len(self.env.backend.link_names))
+        if loads.force_world_n[:, self.other_link_indices].any():
+            raise ValueError('World model point loads must target the base or one of the four calf links')
+        return self.env.step(action, link_point_forces=loads)
+
     @torch.no_grad()
-    def collect(self):
+    def collect(
+        self, *, point_force_plan: Sequence[LinkPointForces | None] | None = None,
+        update_actor_norm: bool = True,
+    ) -> dict[str, float]:
+        """Collect transitions with an optional point-load batch for each control step."""
+        if point_force_plan is not None and (
+            self.push_scheduler is not None or not self.wrench_link_indices
+            or len(point_force_plan) != self.cfg.collect_steps
+        ):
+            raise ValueError('A point-force plan requires scheduler-free wrench conditioning and one entry per step')
         if self.env.foot_friction is not None:
             self.env.resample_foot_friction()
         rewards, dones, driver_rewards = [], [], []
+        push_counts = []
         task_metrics = {}
-        for _ in range(self.cfg.collect_steps):
+        for index in range(self.cfg.collect_steps):
             obs = self.env.observe()
-            self.actor.norm.update(obs)
-            features = self.env.task.model_features(self.env.state, self.env.model_context()).detach().clone()
+            if update_actor_norm:
+                self.actor.norm.update(obs)
             action = self.actor(obs)
             if self.driver is not None:
                 driver_action = self.driver(obs)
@@ -347,14 +421,28 @@ class Trainer:
                     raise ValueError('Data driver must return finite [num_envs, num_actions] actions')
                 action = torch.where(self.driver_mask[:, None], driver_action, action)
             action = action + self.cfg.action_noise * torch.randn_like(action)
-            _, reward, done, extras = self.env.step(action)
+            loads = None if point_force_plan is None else point_force_plan[index]
+            if self.push_scheduler is None:
+                _, reward, done, extras = self._step_for_collection(action, loads)
+                push_record = {}
+            else:
+                (_, reward, done, extras), push_record = self._collect_push_step(action)
+                push_counts.append(extras['transition'].link_wrenches_world[..., :3].ne(0).any(dim=-1).sum(dim=-1))
             transition = extras['transition']
+            features = self.env.task.model_features(transition.state, transition.context)
             record = {'state': pack(transition.state), 'next_state': pack(transition.next_state),
                       'action': transition.action, 'previous_action': transition.previous_action,
                       'torque': transition.torque, 'terminated': transition.terminated,
                       'truncated': transition.truncated, 'features': features,
                       'reward': reward, 'is_driver': self.driver_mask.clone()}
+            if self.wrench_link_indices:
+                wrenches = transition.link_wrenches_world
+                shape = (self.env.num_envs, len(self.wrench_link_indices), 6)
+                record['link_wrenches_world'] = (
+                    features.new_zeros(shape) if wrenches is None else wrenches[:, self.wrench_link_indices]
+                )
             record.update({f'context/{key}': value for key, value in transition.context.items()})
+            record.update(push_record)
             if any(not torch.isfinite(x).all() for x in record.values()) or not torch.isfinite(reward).all():
                 raise RuntimeError('Non-finite simulation transition')
             if callable(getattr(self.env.task, 'metrics', None)):
@@ -373,7 +461,29 @@ class Trainer:
         result.update({f'real/{name}': torch.stack(values).mean().item() for name, values in task_metrics.items()})
         if driver_rewards:
             result['driver_reward'] = torch.stack(driver_rewards).mean().item()
+        if push_counts:
+            counts = torch.stack(push_counts)
+            result['push_active_fraction'] = (counts > 0).float().mean().item()
+            result['push_overlap_fraction'] = (counts > 1).float().mean().item()
         return result
+
+    def _collect_push_step(self, action: torch.Tensor) -> tuple[tuple, dict[str, torch.Tensor]]:
+        scheduler = self.push_scheduler
+        link_quat = self.env.backend.read_link_quaternions()[:, self.wrench_link_indices]
+        prepared = scheduler.prepare(self.push_state, link_quat)
+        loads = scheduler.loads(prepared)
+        shape = (self.env.num_envs, len(self.env.backend.link_names), 3)
+        points = loads.point_local_m.new_zeros(shape).index_copy(1, self.push_link_indices, loads.point_local_m)
+        forces = loads.force_world_n.new_zeros(shape).index_copy(1, self.push_link_indices, loads.force_world_n)
+        result = self.env.step(action, link_point_forces=LinkPointForces(points, forces))
+        reset_ids = result[3].get('final_env_ids')
+        advanced = scheduler.advance(prepared)
+        if reset_ids is not None:
+            reset_state = scheduler.reset(self.env.state.position[reset_ids])
+            advanced = PushState(*(value.index_copy(0, reset_ids, reset)
+                                   for value, reset in zip(advanced, reset_state)))
+        self.push_state = advanced
+        return result, prepared.replay_fields()
 
     def fit_model(self):
         losses = []
@@ -420,7 +530,7 @@ class Trainer:
         cfg = self.cfg
         objective, data, survival = imagined_rollout(
             self.env, self.model, self.actor, self.critic, seed, cfg,
-            step=self.imagined_step, returns=self.imagined_return)
+            step=self.imagined_step, returns=self.imagined_return, push_scheduler=self.push_scheduler)
         behavior = self.behavior_loss(seed) if cfg.behavior_weight else objective.new_zeros(())
         return -objective + cfg.behavior_weight * behavior, (objective.detach(), data, survival, behavior.detach())
 
@@ -502,6 +612,7 @@ def cuda_matmul_tf32(enabled):
 
 def train(config, output):
     from rl_go2.trainers import save_run_spec
+    from rl_go2.trainers.supermimic_init import initialize_weights
     cfg = TrainConfig(**config['trainer'])
     cfg.validate()
     torch.manual_seed(config['seed'])
@@ -511,16 +622,19 @@ def train(config, output):
     env = QuadrupedEnv(config, record_transitions=True)
     with closing(env), cuda_matmul_tf32(cfg.tf32 and env.device.type == 'cuda'):
         trainer = Trainer(env, cfg)
+        if cfg.init_checkpoint is not None:
+            initialize_weights(trainer, Path(cfg.init_checkpoint))
         if not cfg.uses_official_schedule:
             while trainer.replay.size < cfg.model_window:
-                trainer.collect()
+                trainer.collect(update_actor_norm=cfg.world_model_warmup_iterations == 0)
         replay_budget = env.num_envs * cfg.collect_steps * OFFICIAL_REPLAY_RATIO
         update_cost = cfg.model_updates * cfg.model_batch * cfg.model_window
         policy_updates = 0
         with (output / 'metrics.jsonl').open('w') as log:
             for iteration in range(1, cfg.iterations + 1):
                 start = perf_counter()
-                stats = trainer.collect()
+                model_only = iteration <= cfg.world_model_warmup_iterations
+                stats = trainer.collect(update_actor_norm=not model_only)
                 stats.update(collect_seconds=perf_counter() - start, model_seconds=0.0,
                              actor_seconds=0.0, critic_seconds=0.0)
                 updates = 1
@@ -536,6 +650,8 @@ def train(config, output):
                     model_start = perf_counter()
                     stats['model_loss'] = trainer.fit_model()
                     stats['model_seconds'] += perf_counter() - model_start
+                    if model_only:
+                        continue
                     if iteration > cfg.warmup_iterations:
                         policy = trainer.improve_policy()
                         policy['actor_seconds'] += stats['actor_seconds']

@@ -1,5 +1,6 @@
 import torch
 
+from rl_go2.backends import LinkPointForces
 from rl_go2.config import FOOT_NAMES, base_com_offset_ranges, base_mass_scale_range, foot_friction_ranges
 from rl_go2.state import RobotState
 
@@ -57,6 +58,9 @@ class GenesisBackend:
             self.friction_geom_ids = [ids[0] for ids in feet] + [planes[0].geoms[0].idx]
         self.joints = [self.robot.get_joint(name).dofs_idx_local[0] for name in config["robot"]["joint_names"]]
         self.base = self.robot.get_link(config["robot"]["base_link"])
+        links = sorted(self.robot.links, key=lambda link: link.name)
+        self.link_names = tuple(link.name for link in links)
+        self._link_indices = [link.idx_local for link in links]
         self.reset(torch.arange(self.num_envs, device=self.device))
 
     def set_foot_ground_friction(self, base, multipliers):
@@ -112,11 +116,39 @@ class GenesisBackend:
                                  device=self.device)
         self.robot.set_dofs_position(positions.expand(len(env_ids), -1), self.joints, envs_idx=env_ids)
 
-    def step(self, torque, *, base_force=None):
+    def _apply_link_point_forces(self, point_forces: LinkPointForces) -> None:
+        link_quaternion = self.read_link_quaternions()
+        link_position = self.robot.get_links_pos(self._link_indices)
+        offsets = point_forces.point_local_m.detach().to(link_position)
+        forces = point_forces.force_world_n.detach().to(link_position)
+        point_world = link_position + self.gs.utils.geom.transform_by_quat(offsets, link_quaternion)
+        self.robot.apply_links_external_wrench(
+            force=forces, links_idx_local=self._link_indices, pos=point_world,
+            ref=self.gs.link_ref_frame.link_origin, local=False,
+        )
+
+    def read_link_quaternions(self) -> torch.Tensor:
+        """Return current authored link orientations in link_names order (world wxyz)."""
+        # MuJoCo compatibility defers the post-integration Cartesian pose update.
+        self.scene.rigid_solver.update_forward_pos()
+        return self.robot.get_links_quat(self._link_indices)
+
+    def step(
+        self,
+        torque: torch.Tensor,
+        *,
+        base_force: torch.Tensor | None = None,
+        link_point_forces: LinkPointForces | None = None,
+    ) -> None:
+        """Advance one physics step, applying the supplied forces for that step."""
+        if link_point_forces is not None:
+            link_point_forces.validate(self.num_envs, len(self.link_names))
         if base_force is not None:
             if base_force.shape != (self.num_envs, 3) or not torch.isfinite(base_force).all():
                 raise ValueError(f"base_force must have shape ({self.num_envs}, 3) and be finite")
             self.base.apply_external_wrench(force=base_force, ref=self.gs.link_ref_frame.link_COM, local=False)
+        if link_point_forces is not None:
+            self._apply_link_point_forces(link_point_forces)
         self.robot.control_dofs_force(torque, self.joints)
         self.scene.step()
 

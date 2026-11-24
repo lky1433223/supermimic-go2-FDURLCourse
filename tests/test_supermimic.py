@@ -2,6 +2,7 @@
 from copy import deepcopy
 from dataclasses import asdict
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -9,11 +10,14 @@ from unittest.mock import patch
 
 import torch
 
+from rl_go2.backends import LinkPointForces
 from rl_go2.config import load_experiment
 from rl_go2.env import QuadrupedEnv
+from rl_go2.point_push import PushState
 from rl_go2.trainers.model_learning import DynamicsModel, ReplayBuffer, pack, unpack, quat_mul, conjugate
 from rl_go2.state import rotate_inverse
 from rl_go2.trainers.supermimic import Trainer, TrainConfig, imagined_rollout, frozen, lambda_returns, train
+from rl_go2.trainers.supermimic_init import initialize_weights
 from test_framework import FakeBackend
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -61,6 +65,128 @@ class SuperMimicTests(unittest.TestCase):
         torch.testing.assert_close(window['state'][..., 0], torch.tensor([103., 104., 105.]).expand(8, -1))
         torch.testing.assert_close(window['next_state'], window['state'] + 1)
         self.assertTrue(window['valid'].all())
+
+    def test_five_link_wrenches_reach_replay_model_and_imagination(self):
+        self.config.update(backend='mujoco', device='cpu', num_envs=1)
+        recipe = load_experiment(ROOT / 'configs/experiments/flat_supermimic_bootstrap.yaml')
+        self.config['domain_randomization'] = recipe['domain_randomization']
+        for section in self.config['domain_randomization'].values():
+            section['enabled'] = True
+        robot = next(entity for entity in self.config['scene']['entities'] if entity.get('robot'))
+        robot.update(position=[0, 0, 2], rotation=[2**-0.5, 0, 0, 2**-0.5])
+        self.cfg.condition_on_link_wrenches = True
+        self.cfg.warmup_iterations = 0
+        self.cfg.bootstrap_weight = 1.0
+        env = QuadrupedEnv(self.config, record_transitions=True)
+        self.addCleanup(env.close)
+        trainer = Trainer(env, self.cfg)
+        self.assertEqual(trainer.model.net[0].in_features, 93)
+        self.assertEqual(trainer.model.net[-1].out_features, 49)
+        self.assertEqual(trainer.actor.net[0].in_features, 45)
+        self.assertEqual(trainer.critic.net[0].in_features, 73)
+
+        link_names = env.backend.link_names
+        loads = LinkPointForces(torch.zeros(1, len(link_names), 3), torch.zeros(1, len(link_names), 3))
+        base = link_names.index('base')
+        calf = link_names.index('FR_calf')
+        loads.point_local_m[0, base, 1] = 0.2
+        loads.force_world_n[0, base, 1] = 10
+        loads.force_world_n[0, calf, 2] = 5
+        trainer.collect(point_force_plan=[loads, None, None, None])
+
+        replay = trainer.replay.data
+        recorded = replay['link_wrenches_world'][0]
+        self.assertEqual(recorded.shape, (1, 5, 6))
+        torch.testing.assert_close(recorded[0, 0], torch.tensor([0., 10., 0., 0., 0., -2.]))
+        torch.testing.assert_close(recorded[0, 1], torch.tensor([0., 0., 5., 0., 0., 0.]))
+        self.assertFalse(replay['link_wrenches_world'][1:4].any())
+        record = {name: value[0] for name, value in replay.items()}
+        inputs = trainer.model.inputs(record['state'], record['action'], record['previous_action'],
+                                      record['features'], recorded)
+        torch.testing.assert_close(inputs[0, -30:-24], torch.tensor([10., 0., 0., 0., 0., -2.]),
+                                   atol=1e-5, rtol=1e-5)
+        window = trainer.replay.sample_windows(4, self.cfg.model_window, complete_frames=True)
+        self.assertEqual(window['link_wrenches_world'].shape, (4, 2, 5, 6))
+        self.assertTrue(torch.isfinite(trainer.model.loss(window)))
+
+        plan = recorded.new_zeros((1, self.cfg.horizon, 5, 6))
+        plan[:, 1] = recorded
+        seen = []
+        with trainer.model.register_forward_pre_hook(lambda _, args: seen.append(args[4])):
+            imagined_rollout(env, trainer.model, trainer.actor, trainer.critic, record, self.cfg,
+                             wrench_plan_world=plan)
+        torch.testing.assert_close(torch.stack(seen, dim=1), plan)
+
+    def test_scheduled_pushes_continue_in_imagination_and_reset(self):
+        self.check_scheduled_pushes('mujoco')
+
+    @unittest.skipUnless(os.environ.get('RL_GO2_TEST_GENESIS') == '1', 'opt-in Genesis CPU kernel compilation')
+    def test_genesis_scheduled_pushes_continue_in_imagination_and_reset(self):
+        self.check_scheduled_pushes('genesis')
+
+    def check_scheduled_pushes(self, backend: str) -> None:
+        config = load_experiment(ROOT / 'configs/experiments/flat_supermimic_push.yaml')
+        config.update(backend=backend, device='cpu', num_envs=1)
+        push = config['domain_randomization']['point_push']
+        push.update(no_push_episode_probability=0.0, first_wait_seconds=[0.02, 0.02],
+                    gap_seconds=[0.2, 0.2], duration_seconds=0.06)
+        push['targets']['base']['probability'] = 1.0
+        push['targets']['foot']['probability'] = 0.0
+        push['overlap'] = dict(probability=1.0, second_start_delay_steps=[1, 1])
+        self.cfg.collect_steps = 6
+        self.cfg.horizon = 6
+        self.cfg.condition_on_link_wrenches = True
+        env = QuadrupedEnv(config, record_transitions=True)
+        self.addCleanup(env.close)
+        trainer = Trainer(env, self.cfg)
+        scheduler = trainer.push_scheduler
+        predicted = scheduler.geometry.link_quaternions(env.state)
+        native = env.backend.read_link_quaternions()[:, trainer.wrench_link_indices]
+        aligned = torch.where((predicted * native).sum(dim=-1, keepdim=True) < 0, -predicted, predicted)
+        torch.testing.assert_close(aligned, native, atol=1e-6, rtol=0)
+
+        stats = trainer.collect()
+        self.assertAlmostEqual(stats['push_overlap_fraction'], 2 / 6)
+        replay = trainer.replay.data
+        forces = replay['link_wrenches_world'][:6, 0, :, :3]
+        self.assertEqual(forces.norm(dim=-1).gt(0).sum(dim=-1).tolist(), [0, 1, 2, 2, 1, 0])
+        torch.testing.assert_close(forces[1:4, 0], forces[1, 0].expand(3, -1))
+        seed = {name: value[2] for name, value in replay.items()}
+        seen = []
+        with trainer.model.register_forward_pre_hook(lambda _, args: seen.append(args[4])):
+            imagined_rollout(env, trainer.model, trainer.actor, trainer.critic, seed, self.cfg,
+                             push_scheduler=scheduler)
+        resumed = torch.stack(seen)[:, 0, :, :3]
+        torch.testing.assert_close(resumed[:4], forces[2:6])
+        loss, _ = trainer.actor_loss(seed)
+        loss.backward()
+        self.assertTrue(all(torch.isfinite(parameter.grad).all() for parameter in trainer.actor.parameters()))
+
+        env.max_episode_length = 1
+        self.cfg.collect_steps = 2
+        trainer.collect()
+        latest = {name: value[7] for name, value in replay.items()}
+        self.assertEqual(PushState.from_replay(latest).wait.item(), 1)
+        self.assertFalse(latest['link_wrenches_world'].any())
+
+    def test_checkpoint_initialization_appends_zero_wrench_weights(self):
+        source = self.make_trainer()
+        source.collect()
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            (output / 'config.json').write_text(json.dumps(self.config))
+            source.save(output, 40)
+            backend = FakeBackend(self.config)
+            backend.link_names = ('base', 'FR_calf', 'FL_calf', 'RR_calf', 'RL_calf')
+            self.cfg.condition_on_link_wrenches = True
+            target = Trainer(QuadrupedEnv(self.config, backend=backend, record_transitions=True), self.cfg)
+            initialize_weights(target, output / 'model_40.pt')
+        old_weight = source.model.net[0].weight
+        torch.testing.assert_close(target.model.net[0].weight[:, :old_weight.shape[1]], old_weight)
+        self.assertFalse(target.model.net[0].weight[:, -30:].any())
+        torch.testing.assert_close(target.model.input_norm.mean, source.model.input_norm.mean)
+        torch.testing.assert_close(target.actor.norm.mean, source.actor.norm.mean)
+        self.assertFalse(target.actor_optimizer.state)
 
     def test_official_schedule_counts_collection_and_reuses_critic_shuffle(self):
         self.cfg.collect_steps = 1

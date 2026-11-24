@@ -9,7 +9,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from rl_go2.state import RobotState, rotate_inverse
+from rl_go2.state import RobotState, quat_mul, rotate_inverse
 
 STATE_DIM = 37
 
@@ -20,12 +20,6 @@ def pack(state):
 
 def unpack(state):
     return RobotState(*state.split([3, 4, 3, 3, 12, 12], dim=-1))
-
-
-def quat_mul(a, b):
-    aw, av, bw, bv = a[..., :1], a[..., 1:], b[..., :1], b[..., 1:]
-    return torch.cat((aw * bw - (av * bv).sum(-1, keepdim=True),
-                      aw * bv + bw * av + torch.linalg.cross(av, bv, dim=-1)), -1)
 
 
 def canonical_quat(q):
@@ -89,20 +83,79 @@ class RunningNorm(nn.Module):
 
 
 class DynamicsModel(nn.Module):
-    def __init__(self, features, hidden):
+    """Predict the next robot state from the current state, action and physics.
+
+    Flat Go2 input layout before normalization (zero-based indices, slices
+    exclude their stop index). The heading frame shares world Z and rotates
+    its horizontal axes by the current base yaw.
+
+    - ``0``                      Base-link origin height in world coordinates (m).
+    - ``1:5``                    Base orientation relative to heading (unit wxyz).
+    - ``5:8``                    Base-origin linear velocity (heading xyz, m/s).
+    - ``8:11``                   Base angular velocity (heading xyz, rad/s).
+    - ``11:23``                  Joint positions (rad).
+    - ``23:35``                  Joint velocities (rad/s).
+    - ``35:47``                  Current applied action after clipping (unitless).
+    - ``47:59``                  Foot friction, ordered FR, FL, RR, RL. Each foot
+                                 contributes sliding (unitless), torsional (m),
+                                 and rolling (m), in that order.
+    - ``59``                     Base-link mass (kg).
+    - ``60:63``                  Base COM offset from nominal (base-link xyz, m).
+    - ``63:69``, ``69:75``, ``75:81``, ``81:87``, ``87:93``
+                                 Point-load features for base, FR_calf, FL_calf,
+                                 RR_calf and RL_calf, respectively. Each block
+                                 is [Fx, Fy, Fz, Mx, My, Mz] in heading axes
+                                 (N and N·m), with moment about the link origin.
+                                 Unloaded links have zero-valued blocks.
+
+    Joint blocks follow ``robot.joint_names``. The Go2 default is FR, FL, RR,
+    RL, each with hip, thigh and calf in that order. The controller converts
+    the input action to an angle target using the default angles and action
+    scale. The indices above show all randomization features enabled. Disabled
+    physics groups are omitted, so subsequent slices shift. The final 30
+    values are included only when link-wrench conditioning is enabled.
+    """
+
+    def __init__(self, features: int, hidden: tuple[int, ...], *, wrench_links: int = 0) -> None:
         super().__init__()
-        self.input_norm = RunningNorm(35 + 12 + features)
+        self.wrench_links = wrench_links
+        base_width = 35 + 12 + features
+        self.input_norm = RunningNorm(base_width)
+        # Newly introduced load features have no samples in a flat-policy checkpoint.
+        self.wrench_norm = RunningNorm(6 * wrench_links) if wrench_links else None
         self.output_norm = RunningNorm(STATE_DIM + 12)
-        self.net = mlp(35 + 12 + features, hidden, STATE_DIM + 12)
+        self.net = mlp(base_width + 6 * wrench_links, hidden, STATE_DIM + 12)
         # Begin near the empirical average increment after statistics warmup.
         nn.init.zeros_(self.net[-1].weight)
         nn.init.zeros_(self.net[-1].bias)
 
-    def inputs(self, state, action, previous_action, features):
+    def _heading_features(
+        self, features: torch.Tensor, frame: torch.Tensor, wrenches_world: torch.Tensor | None,
+    ) -> torch.Tensor:
+        if not self.wrench_links:
+            return features
+        shape = (features.shape[0], self.wrench_links, 6)
+        if wrenches_world is None or wrenches_world.shape != shape:
+            raise ValueError(f"Expected world-frame link wrenches with shape {shape}")
+        # Rotate force and moment about each link origin into the same frame as the state.
+        vectors = wrenches_world.reshape(shape[0], self.wrench_links, 2, 3)
+        local = rotate_inverse(frame[:, None, None, :], vectors)
+        return torch.cat((features, local.flatten(1)), dim=-1)
+
+    def inputs(
+        self,
+        state: torch.Tensor,
+        action: torch.Tensor,
+        previous_action: torch.Tensor,
+        features: torch.Tensor,
+        wrenches_world: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Build the network input in the heading frame of the supplied state."""
         frame = heading(state[:, 3:7])
         # RobotState is Markov for the external PD controller (there is no actuator
         # delay). Feeding previous_action creates a noncausal shortcut on gait data.
-        return torch.cat((local_state(state, frame), action, features), -1)
+        model_features = self._heading_features(features, frame, wrenches_world)
+        return torch.cat((local_state(state, frame), action, model_features), dim=-1)
 
     def targets(self, state, next_state, torque):
         frame = heading(state[:, 3:7])
@@ -116,14 +169,31 @@ class DynamicsModel(nn.Module):
 
     @torch.no_grad()
     def update_stats(self, record):
-        self.input_norm.update(self.inputs(record['state'], record['action'], record['previous_action'], record['features']))
+        inputs = self.inputs(record['state'], record['action'], record['previous_action'],
+                             record['features'], record.get('link_wrenches_world'))
+        base_width = self.input_norm.mean.numel()
+        self.input_norm.update(inputs[:, :base_width])
+        if self.wrench_norm is not None:
+            self.wrench_norm.update(inputs[:, base_width:])
         self.output_norm.update(self.targets(record['state'], record['next_state'], record['torque']))
 
-    def forward(self, state, action, previous_action, features):
+    def forward(
+        self,
+        state: torch.Tensor,
+        action: torch.Tensor,
+        previous_action: torch.Tensor,
+        features: torch.Tensor,
+        wrenches_world: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Predict the next state and motor torque for optional per-link force/moment (N, N·m)."""
         frame = heading(state[:, 3:7])
         before = local_state(state, frame)
-        inputs = torch.cat((before, action, features), -1)
-        raw = self.net(self.input_norm(inputs))
+        inputs = torch.cat((before, action, self._heading_features(features, frame, wrenches_world)), -1)
+        base_width = self.input_norm.mean.numel()
+        normalized = self.input_norm(inputs[:, :base_width])
+        if self.wrench_norm is not None:
+            normalized = torch.cat((normalized, self.wrench_norm(inputs[:, base_width:])), dim=-1)
+        raw = self.net(normalized)
         delta = raw * self.output_norm.scale() + self.output_norm.mean
         after = before[:, 1:] + delta[:, 3:STATE_DIM]
         q = canonical_quat(quat_mul(frame, canonical_quat(after[:, :4])))
@@ -134,9 +204,12 @@ class DynamicsModel(nn.Module):
 
     def loss(self, window):
         state = window['state'][:, 0]
+        wrenches = window.get('link_wrenches_world')
         total = state.new_zeros(())
         for j in range(window['action'].shape[1]):
-            predicted, torque = self(state, window['action'][:, j], window['previous_action'][:, j], window['features'][:, j])
+            wrenches_world = None if wrenches is None else wrenches[:, j]
+            predicted, torque = self(state, window['action'][:, j], window['previous_action'][:, j],
+                                     window['features'][:, j], wrenches_world)
             # Compare full autoregressive state, not only the current step's increment.
             error = self.targets(window['next_state'][:, j], predicted,
                                  torque - window['torque'][:, j]) / self.output_norm.scale()
@@ -189,6 +262,8 @@ class ReplayBuffer:
             t = self._slots(start + torch.arange(steps - 1, device=self.device))
             window = {key: self.data[key][t, env[:, None]]
                       for key in ('state', 'action', 'previous_action', 'torque', 'features')}
+            if 'link_wrenches_world' in self.data:
+                window['link_wrenches_world'] = self.data['link_wrenches_world'][t, env[:, None]]
             window['next_state'] = self.data['state'][(t + 1) % self.length, env[:, None]]
             window['valid'] = torch.ones_like(t, dtype=torch.bool)
             return window

@@ -18,6 +18,13 @@ class RobotState:
         return RobotState(**{f.name: getattr(self, f.name).detach().clone() for f in fields(self)})
 
 
+def quat_mul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """Compose two rotation quaternions in wxyz order."""
+    aw, av, bw, bv = a[..., :1], a[..., 1:], b[..., :1], b[..., 1:]
+    return torch.cat((aw * bw - (av * bv).sum(-1, keepdim=True),
+                      aw * bv + bw * av + torch.linalg.cross(av, bv, dim=-1)), dim=-1)
+
+
 def rotate_inverse(quaternion, vector):
     """Rotate world-frame vectors into a body's frame (unit wxyz quaternion)."""
     xyz = quaternion[..., 1:]
