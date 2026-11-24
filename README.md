@@ -438,3 +438,30 @@ Context 为固定键集合的小型张量字典，replay 自动保存；地形�
 输出目录必须不存在，保存完整配置、策略约定、资产哈希、逐轮 `metrics.jsonl` 和网络/优化器 checkpoint。
 世界模型修正后的 checkpoint schema 为 `rl-go2.supermimic/v2`，与旧输入维度不兼容。
 当前没有恢复训练 CLI，也不保存完整 replay；本节的“引导预热”是监督训练，不是加载另一 actor 的权重。
+
+### 交互式策略推理
+
+`play.py` 持续运行单个机器人的策略推理，默认 1 倍真实时间。浏览器控制面板
+接收键盘输入，引擎原生 3D 窗口用于鼠标调整视角。保持浏览器面板在前台操作，
+切换窗口或超过 0.6 秒没有输入心跳时清空移动按键。
+
+```bash
+# macOS 上 MuJoCo 使用 mjpython，Linux 可使用 python。
+uv run --extra train mjpython scripts/play.py --backend mujoco \
+  --run-dir output/<训练目录> --iteration <权重轮次>
+uv run --extra train python scripts/play.py --backend genesis \
+  --run-dir output/<训练目录> --iteration <权重轮次>
+```
+
+W/S 按住前进/后退，A/D 按住左转/右转，支持组合键。↑/↓ 每次增减
+0.1 m/s 步速，←/→ 每次减增 0.1 rad/s 转速。Space 清空移动指令，
+P 暂停/继续，R 重置机器人，Esc 退出。指令以 0.15 秒时间常数平滑变化，
+停止指令时策略继续执行。面板显示速度档位、当前指令、机体坐标系实际速度和训练范围。
+线速度和角速度档位上限采用对应训练范围端点的最大绝对值，允许正反向操作，
+训练未覆盖的方向（例如仅前进训练后的后退）效果需要实际观察。
+
+默认读取 `training/policy.pt` 和 `training/config.json`，也兼容旧版训练目录。
+可用 `--checkpoint` 加载 SuperMimic checkpoint，或 `--policy` 指定导出策略。
+跨机器的失效资源路径会按仓库 `assets/` 路径重新定位，源配置保持原样。
+物理条件固定为标称质量、零质心偏移和四脚 0.8 滑动摩擦。跌倒后自动重置并清空指令。
+`--steps` 可限制交互短跑步数，`--no-browser` 只打印面板地址。
