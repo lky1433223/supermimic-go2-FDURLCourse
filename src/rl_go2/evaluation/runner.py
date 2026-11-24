@@ -8,6 +8,7 @@ import socket
 import sys
 
 from .executor import execute_plan
+from .push_events import build_push_events
 
 
 def load_policy(args, training, config):
@@ -54,6 +55,8 @@ def run_evaluation(args, task):
     plan = task.build_plan(args.steps)
     conditions = tuple({trial.condition.name: trial.condition for trial in plan.trials}.values())
     condition_name = conditions[0].name if len(conditions) == 1 else 'comparison'
+    if task.environment_task is not None:
+        config['task']['name'] = task.environment_task
     if plan.episode_seconds is not None:
         config['task'].update(episode_seconds=plan.episode_seconds, command_resample_seconds=plan.episode_seconds)
 
@@ -61,7 +64,8 @@ def run_evaluation(args, task):
     policy, weight_path, iteration = load_policy(args, training, config)
     with weight_path.open('rb') as stream:
         digest = file_digest(stream, 'sha256').hexdigest()
-    seeds = args.seeds or [1]
+    seeds = args.seeds or list(task.default_seeds)
+    push_events = build_push_events(config, plan, seeds)
     host = socket.gethostname()
     machine = 'icc' if output_root.is_relative_to(Path('/home/lky/RL-Go2')) else host.split('.')[0]
     common = {
@@ -80,6 +84,11 @@ def run_evaluation(args, task):
         'physical_conditions': [asdict(condition) for condition in conditions],
     }
     metadata['trials'] = [asdict(trial) for trial in plan.trials]
+    if push_events:
+        metadata['point_push_events'] = [
+            {'seed': seed, 'condition': condition, 'case': case, **asdict(event)}
+            for (seed, condition, case), event in push_events.items()
+        ]
     motions = {}
     for trial in plan.trials:
         if trial.motion is not None:
@@ -106,7 +115,8 @@ def run_evaluation(args, task):
     write_json(dest / 'eval-config.json', metadata)
     print(f'Evaluation output: {dest.resolve()}', file=sys.stderr, flush=True)
     with recording as video:
-        report = execute_plan(config, policy, seeds, plan, viewer=args.viewer, video=video)
+        report = execute_plan(config, policy, seeds, plan, viewer=args.viewer, video=video,
+                              push_events=push_events)
 
     assessment = {**common, **report}
     write_json(condition / 'assessment.json', assessment)

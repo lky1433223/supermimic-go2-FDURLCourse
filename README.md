@@ -27,8 +27,8 @@ output/<实验目录>/
       replay.mp4
 ```
 
-评测统一使用 `scripts/evaluate.py`。用 `--list-tasks` 查看四个 task，用 `--help` 查看所有参数。
-用 `--task` 选择评测。四个 `evaluation/tasks/*.py` 文件分别显式列出 `conditions`、`motions`、
+评测统一使用 `scripts/evaluate.py`。用 `--list-tasks` 查看可用 task，用 `--help` 查看所有参数。
+用 `--task` 选择评测。`evaluation/tasks/` 下的 task 类声明 `conditions`、`motions`、
 `metrics`、`report`、`episode_seconds` 和结束规则。摩擦、质量、质心与动作都直接在对应文件中修改。
 训练目录的 `training/config.json` 提供机器人、场景和控制参数，物理工况由评测 Python 定义覆盖。
 `conditions.py` 和 `motion_tasks.py` 提供通用数据类，四个类通过基类的 `build_plan()` 展开工况与动作组合。
@@ -92,6 +92,25 @@ uv run --extra train python scripts/evaluate.py --run-dir output/flat-supermimic
 
 `rollout` 用于运行检查，固定零质心偏移、标称质量和惯量、四脚滑动摩擦 0.8 和 0.5 m/s 直行。
 默认用种子 1 跑 1000 个控制步，重置后继续至步数上限。
+
+### 机身质量和质心泛化
+
+`--task mass` 固定零质心偏移，依次测试机身质量倍率 0.50、0.80、0.90、1.00、1.10、1.20、1.50。
+惯量随质量同比缩放。每个种子跑 42 项。
+
+`--task com-offset` 固定标称质量与惯量，测试零偏移、X 轴 ±1/±3/±5 cm、Y 轴 ±3/±4 cm、
+Z 轴 ±1 cm，以及三轴同时偏移 (+3, +3, +1) cm。每个种子跑 84 项。
+
+两项都使用平地步态、固定四脚滑动摩擦 0.8 和与 `low-friction` 相同的六项动作。
+每项最多 20 秒。报告按工况统计摔倒，并记录实际机身质量、质心偏移、速度跟踪和走停指标。
+静站另记录机身最低高度和最终水平位移。
+
+### 随机点力恢复
+
+`--task point-push` 在 MuJoCo 标称物理工况下运行相同的六个动作。对照组无推力，机身组为 20 N 和 30 N，
+足端组为 8 N 和 12 N。每次持续 0.2 秒，在第 5 秒开始，走停项在第 10 秒开始。
+默认种子 1、2、3，共 90 项。两档力度复用对应试次的施力连杆、局部落点和世界系方向。
+`eval-config.json` 保存实际点力事件，报告按工况统计摔倒及恢复结果。恢复时间从撤力到满足 0.5 秒稳定判据为止。
 
 训练启动时会打印绝对输出路径。历史 `runs/` 及当前已有产物保持原位，仍被忽略，不自动迁移。
 

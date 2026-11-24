@@ -1,4 +1,4 @@
-"""Declarative contract shared by all four evaluation tasks."""
+"""Declarative contract shared by evaluation tasks."""
 from dataclasses import dataclass
 import math
 
@@ -43,6 +43,8 @@ class EvaluationTask:
     backends: tuple[str, ...] = ('mujoco', 'genesis')
     supports_parallel: bool = False
     default_steps: int | None = None
+    default_seeds: tuple[int, ...] = (1,)
+    environment_task: str | None = None
 
     def build_plan(self, steps: int | None = None) -> EvaluationPlan:
         """Validate declarations and pair each condition with each motion."""

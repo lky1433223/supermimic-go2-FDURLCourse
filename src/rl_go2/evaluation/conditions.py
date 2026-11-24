@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from random import Random
 
 from rl_go2.config import FOOT_NAMES, base_com_offset_ranges, base_mass_scale_range, foot_friction_ranges
+from .push_events import PushSpec
 
 
 @dataclass(frozen=True)
@@ -19,6 +20,7 @@ class EvaluationCondition:
     base_mass: dict | None = None
     base_com: dict | None = None
     friction_phases: tuple[FrictionPhase, ...] = ()
+    point_push: PushSpec | None = None
 
     def validate(self) -> None:
         """Validate all physical fields before loading the evaluated policy."""
@@ -26,6 +28,11 @@ class EvaluationCondition:
         base_mass_scale_range(config)
         base_com_offset_ranges(config)
         ranges = foot_friction_ranges(config)
+        if self.point_push is not None:
+            if self.point_push.target not in ('base', 'foot'):
+                raise ValueError('Point push target must be base or foot')
+            if not 0 < self.point_push.force_n < float('inf'):
+                raise ValueError('Point push force must be finite and positive')
         if self.friction_phases:
             if ranges is None:
                 raise ValueError('Friction phases require enabled foot friction')

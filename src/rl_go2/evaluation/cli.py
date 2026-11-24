@@ -17,7 +17,7 @@ def main(argv=None):
     weights.add_argument('--policy', type=Path, help='Exported TorchScript policy (default: training/policy.pt)')
     parser.add_argument('--iteration', type=int, help='Training iteration of the evaluated weights')
     parser.add_argument('--backend', choices=('mujoco', 'genesis'), default='mujoco', help='Default: mujoco')
-    parser.add_argument('--seeds', type=int, nargs='+', help='Default: 1 for all tasks')
+    parser.add_argument('--seeds', type=int, nargs='+', help='Default: 1, or 1 2 3 for point-push')
     parser.add_argument('--steps', type=int, help='Rollout steps per seed (default: 1000)')
     parser.add_argument('--device', choices=('cpu', 'cuda', 'mps'), default='cpu', help='Default: cpu')
     parser.add_argument('--num-envs', type=int, default=1, help='Number of simulation environments (default: 1)')

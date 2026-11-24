@@ -4,6 +4,66 @@ import math
 import torch
 
 
+RECOVERY_CRITERIA = {
+    'planar_velocity_error_m_s': 0.1,
+    'yaw_rate_error_rad_s': 0.15,
+    'tilt_deg': 15.0,
+    'hold_seconds': 0.5,
+}
+
+
+class PushRecoveryMetrics:
+    """Track disturbances and the first sustained return to commanded motion."""
+
+    def __init__(self, event, dt):
+        self.event = event
+        self.dt = dt
+        self.hold_steps = math.ceil(RECOVERY_CRITERIA['hold_seconds'] / dt)
+        self.hold = 0
+        self.recovery_seconds = None
+        self.peak_tilt_deg = 0.0
+        self.peak_planar_error = 0.0
+
+    def update(self, env, transition, step) -> None:
+        if step < self.event.start_step:
+            return
+        state = transition.next_state
+        linear, angular, gravity = env.task.body_state(state)
+        command = transition.context['commands'][0]
+        planar_error = (linear[0, :2] - command[:2]).norm().item()
+        yaw_error = abs(angular[0, 2].item() - command[2].item())
+        tilt = math.degrees(math.acos((-gravity[0, 2]).clamp(-1, 1).item()))
+        self.peak_tilt_deg = max(self.peak_tilt_deg, tilt)
+        self.peak_planar_error = max(self.peak_planar_error, planar_error)
+        if step < self.event.end_step or self.recovery_seconds is not None:
+            return
+        stable = (
+            planar_error < RECOVERY_CRITERIA['planar_velocity_error_m_s']
+            and yaw_error < RECOVERY_CRITERIA['yaw_rate_error_rad_s']
+            and tilt < RECOVERY_CRITERIA['tilt_deg']
+            and not transition.terminated[0].item()
+        )
+        self.hold = self.hold + 1 if stable else 0
+        if self.hold >= self.hold_steps:
+            self.recovery_seconds = (step + 1 - self.event.end_step) * self.dt
+
+    def finish(self, steps: int, fell: bool) -> dict:
+        if steps <= self.event.start_step:
+            return {'status': 'fell_before_push', 'recovery_seconds': None}
+        if fell:
+            status = 'fell_after_push_onset'
+        elif self.recovery_seconds is None:
+            status = 'not_recovered'
+        else:
+            status = 'recovered'
+        return {
+            'status': status,
+            'recovery_seconds': self.recovery_seconds,
+            'peak_tilt_deg': self.peak_tilt_deg,
+            'peak_planar_velocity_error_m_s': self.peak_planar_error,
+        }
+
+
 class TrialMetrics:
     def __init__(self, env, trial):
         self.trial = trial
@@ -18,6 +78,7 @@ class TrackingMetrics(TrialMetrics):
         self.errors = []
         self.velocities = []
         self.positions = [env.state.position[0, :2].clone()]
+        self.stand_heights = [] if trial.name == 'stand' else None
         self.transition = None
 
     def update(self, env, transition, reward, done, observation, step):
@@ -28,6 +89,8 @@ class TrackingMetrics(TrialMetrics):
         self.errors.append((velocity - transition.context['commands'][0]).square())
         self.velocities.append(velocity)
         self.positions.append(transition.next_state.position[0, :2])
+        if self.stand_heights is not None:
+            self.stand_heights.append(transition.next_state.position[0, 2])
         self.transition = transition
 
     def finish(self, env):
@@ -47,6 +110,11 @@ class TrackingMetrics(TrialMetrics):
         }
         if self.trial.motion.stop_at_seconds is not None:
             result.update(self.stop_metrics(env.dt, not fell))
+        if self.stand_heights is not None:
+            result.update(
+                min_base_height_m=torch.stack(self.stand_heights).min().item(),
+                final_planar_displacement_m=(self.positions[-1] - self.positions[0]).norm().item(),
+            )
         if env.foot_friction is not None:
             result['foot_ground_friction'] = self.transition.context['foot_ground_friction'][0].reshape(4, 3).tolist()
         if env.base_mass_kg is not None:

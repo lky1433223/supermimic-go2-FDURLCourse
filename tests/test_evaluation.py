@@ -4,6 +4,7 @@ import unittest
 
 import torch
 
+from rl_go2.evaluation.push_events import sample_event
 from rl_go2.evaluation.conditions import EvaluationCondition, PHYSICAL_SAMPLES, PhysicalSample
 from rl_go2.evaluation.executor import execute_trial
 from rl_go2.evaluation.motion_tasks import MotionTask
@@ -76,6 +77,36 @@ class EvaluationTests(unittest.TestCase):
                     self.assertEqual(condition.base_mass, baseline.base_mass)
                     self.assertEqual(condition.base_com, baseline.base_com)
 
+    def test_body_parameter_sweeps_hold_other_parameters_fixed(self):
+        mass = TASKS['mass']
+        com = TASKS['com-offset']
+        self.assertEqual(len(mass.build_plan().trials), 42)
+        self.assertEqual(len(com.build_plan().trials), 84)
+        for task in (mass, com):
+            self.assertEqual(task.motions, TASKS['low-friction'].motions)
+            self.assertEqual(task.environment_task, 'flat_walk')
+            for condition in task.conditions:
+                self.assertEqual(condition.foot_ground_friction, TASKS['rollout'].conditions[0].foot_ground_friction)
+                self.assertEqual(condition.friction_phases, ())
+        self.assertEqual(
+            [condition.base_mass['scale_range'] for condition in mass.conditions],
+            [[scale, scale] for scale in (0.50, 0.80, 0.90, 1.00, 1.10, 1.20, 1.50)],
+        )
+        for condition in mass.conditions:
+            self.assertEqual(condition.base_com['offset_ranges_m'], dict.fromkeys('xyz', [0.0, 0.0]))
+        offsets = []
+        for condition in com.conditions:
+            self.assertEqual(condition.base_mass['scale_range'], [1.0, 1.0])
+            ranges = condition.base_com['offset_ranges_m']
+            for low, high in ranges.values():
+                self.assertEqual(low, high)
+            offsets.append(tuple(ranges[axis][0] for axis in 'xyz'))
+        self.assertCountEqual(offsets, [
+            (0, 0, 0), (-0.01, 0, 0), (0.01, 0, 0), (-0.03, 0, 0), (0.03, 0, 0),
+            (-0.05, 0, 0), (0.05, 0, 0), (0, -0.03, 0), (0, 0.03, 0),
+            (0, -0.04, 0), (0, 0.04, 0), (0, 0, -0.01), (0, 0, 0.01), (0.03, 0.03, 0.01),
+        ])
+
     def test_reset_rule_controls_shared_loop(self):
         for continue_after_reset, expected in ((False, 1), (True, 4)):
             with self.subTest(continue_after_reset=continue_after_reset):
@@ -89,6 +120,28 @@ class EvaluationTests(unittest.TestCase):
                 self.assertEqual(result['steps'], expected)
                 for command in env.commands:
                     torch.testing.assert_close(command, torch.tensor([[0.5, 0, 0]]))
+
+    def test_point_push_pairs_share_placement_and_timing(self):
+        task = TASKS['point-push']
+        plan = task.build_plan()
+        self.assertEqual(len(plan.trials) * len(task.default_seeds), 90)
+        self.assertEqual(sum(trial.condition.point_push is None for trial in plan.trials), 6)
+        geometry = SimpleNamespace(sample_points=lambda directions: directions + torch.rand(directions.shape))
+        config = {'robot': {'base_link': 'base'}}
+        for target, limit in (('base', 20.0), ('foot', 8.0)):
+            events = []
+            for level in ('limit', 'ood'):
+                trial = next(trial for trial in plan.trials
+                             if trial.condition.name == f'{target}-{level}' and trial.name == 'walk_to_stop')
+                events.append(sample_event(config, geometry, 0.02, trial, 1))
+            boundary, outside = events
+            self.assertEqual((boundary.start_step, boundary.end_step), (500, 510))
+            self.assertEqual(boundary.start_step, outside.start_step)
+            self.assertEqual(boundary.link_name, outside.link_name)
+            self.assertEqual(boundary.point_local_m, outside.point_local_m)
+            force = torch.tensor(boundary.force_world_n)
+            self.assertAlmostEqual(force.norm().item(), limit, places=5)
+            torch.testing.assert_close(torch.tensor(outside.force_world_n), 1.5 * force)
 
     def test_motion_and_friction_events_use_their_own_schedules(self):
         tracking = TASKS['standard'].build_plan()
