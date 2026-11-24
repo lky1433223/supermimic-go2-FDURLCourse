@@ -127,6 +127,7 @@ class SuperMimicTests(unittest.TestCase):
     @unittest.skipUnless(os.environ.get('RL_GO2_TEST_CUDA') == '1' and torch.cuda.is_available(),
                          'opt-in Genesis CUDA graph regression')
     def test_cuda_graph_actor_update_with_scheduled_pushes(self):
+        self.cfg.compile_training = False
         self.check_scheduled_pushes('genesis', device='cuda')
 
     def check_scheduled_pushes(self, backend: str, *, device: str = 'cpu') -> None:

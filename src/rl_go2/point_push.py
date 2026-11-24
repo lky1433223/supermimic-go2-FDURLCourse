@@ -163,6 +163,8 @@ class PointPushScheduler:
         self.first_wait = tuple(round(seconds / dt) for seconds in spec.first_wait)
         self.gap = tuple(round(seconds / dt) for seconds in spec.gap)
         self.idle = -self.duration
+        foot_probability = (1 - spec.base_probability) / 4
+        self.link_weights = geometry.base_half_size.new_tensor([spec.base_probability, *([foot_probability] * 4)])
         if spec.overlap_probability and spec.overlap_delay[1] >= self.duration:
             raise ValueError("point_push overlap delay must be shorter than the push duration")
 
@@ -178,8 +180,7 @@ class PointPushScheduler:
     def _schedule_group(self, state: PushState) -> tuple[torch.Tensor, torch.Tensor]:
         due = state.wait == 0
         device = state.wait.device
-        weights = state.forces.new_full((5,), (1 - self.spec.base_probability) / 4)
-        weights[0] = self.spec.base_probability
+        weights = self.link_weights
         primary = self._sample_link(weights.expand(state.wait.shape[0], -1))
         delay = torch.full_like(state.delay, self.idle).scatter(1, primary, 0)
         extra = torch.zeros_like(state.wait)
