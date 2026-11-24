@@ -5,6 +5,7 @@ import mujoco
 import numpy as np
 import torch
 
+from rl_go2.backends import LinkPointForces
 from rl_go2.config import FOOT_NAMES, foot_friction_ranges
 from rl_go2.state import RobotState
 
@@ -54,6 +55,10 @@ class MujocoBackend:
         self.q_indices = self.model.jnt_qposadr[joints]
         self.v_indices = self.model.jnt_dofadr[joints]
         self.base = self.model.body(config["robot"]["base_link"]).id
+        links = sorted((body.get("name"), self.model.body(body.get("name")).id)
+                       for body in world.iter("body") if body.get("name") is not None)
+        self.link_names = tuple(name for name, _ in links)
+        self._link_indices = np.array([index for _, index in links], dtype=np.intp)
         self.nominal_base_com = self.model.body_ipos[self.base].copy()
         self.nominal_base_mass = self.model.body_mass[self.base]
         self.nominal_base_inertia = self.model.body_inertia[self.base].copy()
@@ -116,12 +121,37 @@ class MujocoBackend:
         self.data.qpos[self.q_indices] = spec.get("reset_joint_positions", spec["default_joint_positions"])
         mujoco.mj_forward(self.model, self.data)
 
-    def step(self, torque, *, base_force=None):
+    def _apply_link_point_forces(self, point_forces: LinkPointForces) -> None:
+        links = self._link_indices
+        rotations = self.data.xmat[links].reshape(-1, 3, 3)
+        local_points = point_forces.point_local_m[0].detach().to(device="cpu", dtype=torch.float64).numpy()
+        forces = point_forces.force_world_n[0].detach().to(device="cpu", dtype=torch.float64).numpy()
+        point_world = self.data.xpos[links] + np.einsum("lij,lj->li", rotations, local_points)
+        self.data.xfrc_applied[links, :3] += forces
+        # MuJoCo applies each Cartesian wrench at the body's center of mass.
+        self.data.xfrc_applied[links, 3:] += np.cross(point_world - self.data.xipos[links], forces)
+
+    def read_link_quaternions(self) -> torch.Tensor:
+        """Return current authored link orientations in link_names order (world wxyz)."""
+        return torch.from_numpy(self.data.xquat[self._link_indices]).float().unsqueeze(0)
+
+    def step(
+        self,
+        torque: torch.Tensor,
+        *,
+        base_force: torch.Tensor | None = None,
+        link_point_forces: LinkPointForces | None = None,
+    ) -> None:
+        """Advance one physics step, applying the supplied forces for that step."""
+        if link_point_forces is not None:
+            link_point_forces.validate(self.num_envs, len(self.link_names))
         self.data.xfrc_applied[:] = 0
         if base_force is not None:
             if base_force.shape != (1, 3) or not torch.isfinite(base_force).all():
                 raise ValueError("base_force must have shape (1, 3) and be finite")
             self.data.xfrc_applied[self.base, :3] = base_force[0].detach().cpu().numpy()
+        if link_point_forces is not None:
+            self._apply_link_point_forces(link_point_forces)
         self.data.ctrl[self.motors] = torque[0].detach().cpu().numpy()
         mujoco.mj_step(self.model, self.data)
         # mj_step advances qpos after computing derived kinematics.

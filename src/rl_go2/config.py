@@ -189,4 +189,11 @@ def load_experiment(path):
     foot_friction_ranges(config)
     base_mass_scale_range(config)
     base_com_offset_ranges(config)
+    from rl_go2.point_push import PointPushConfig
+
+    push = PointPushConfig.from_config(config)
+    if push is not None and (config['trainer']['name'] != 'supermimic'
+                             or not config['trainer'].get('condition_on_link_wrenches')
+                             or task['name'] != 'flat_walk'):
+        raise ValueError('point_push requires SuperMimic flat_walk with condition_on_link_wrenches')
     return config

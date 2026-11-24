@@ -22,7 +22,7 @@ def main():
     parser.add_argument("--num-envs", type=int)
     parser.add_argument("--iterations", type=int)
     parser.add_argument("--output", type=Path, help="Run root; model artifacts are written under training/")
-    parser.add_argument("--init-checkpoint", type=Path, help="Initialize PPO actor/critic from a checkpoint")
+    parser.add_argument("--init-checkpoint", type=Path, help="Initialize training weights from a checkpoint")
     parser.add_argument("--driver-policy", type=Path, help="Optional TorchScript data driver for SuperMimic")
     args = parser.parse_args()
     config = load_experiment(args.config)
@@ -36,8 +36,8 @@ def main():
     if config["num_envs"] < 1 or trainer["iterations"] < 1:
         parser.error("num-envs and iterations must be positive")
     if args.init_checkpoint is not None:
-        if trainer["name"] != "ppo" or not args.init_checkpoint.is_file():
-            parser.error("--init-checkpoint requires PPO and an existing checkpoint")
+        if not args.init_checkpoint.is_file():
+            parser.error("--init-checkpoint requires an existing checkpoint")
         trainer["init_checkpoint"] = str(args.init_checkpoint.resolve())
     if args.driver_policy is not None:
         if trainer["name"] != "supermimic":

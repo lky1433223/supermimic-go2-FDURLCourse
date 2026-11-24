@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import torch
 
-from rl_go2.backends import make_backend
+from rl_go2.backends import LinkPointForces, make_backend
 from rl_go2.config import load_experiment, load_scene
 from rl_go2.control import JointPositionControl
 from rl_go2.env import QuadrupedEnv
@@ -148,6 +148,75 @@ class FrameworkTests(unittest.TestCase):
             self.assertFalse(backend.data.xfrc_applied.any())
             mujoco.mj_subtreeVel(backend.model, backend.data)
             self.assertAlmostEqual(float(backend.data.subtree_linvel[backend.base, 0]), velocity, places=5)
+        finally:
+            backend.close()
+
+    def test_mujoco_point_force_matches_native_point_application(self):
+        import mujoco
+        import numpy as np
+
+        config = deepcopy(self.config)
+        config.update(backend="mujoco", device="cpu", num_envs=1)
+        robot = next(entity for entity in config["scene"]["entities"] if entity.get("robot"))
+        robot.update(position=[0, 0, 2], rotation=[2**-0.5, 0, 0, 2**-0.5])
+        backend = make_backend(config)
+        try:
+            self.assertEqual(len(backend.link_names), 13)
+            shape = (1, len(backend.link_names), 3)
+            point_forces = LinkPointForces(torch.zeros(shape), torch.zeros(shape))
+            calf = backend.link_names.index("FR_calf")
+            point_forces.point_local_m[0, calf, 2] = -0.2
+            point_forces.force_world_n[0, calf, 1] = 20
+            body = backend.model.body("FR_calf").id
+            reference = mujoco.MjData(backend.model)
+            reference.qpos[:] = backend.data.qpos
+            mujoco.mj_forward(backend.model, reference)
+            point_world = reference.xpos[body] + (
+                reference.xmat[body].reshape(3, 3) @ point_forces.point_local_m[0, calf].numpy()
+            )
+            mujoco.mj_applyFT(backend.model, reference, np.array([0., 20., 0.]), np.zeros(3),
+                              point_world, body, reference.qfrc_applied)
+            mujoco.mj_step(backend.model, reference)
+            backend.step(torch.zeros(1, 12), link_point_forces=point_forces)
+            np.testing.assert_allclose(backend.data.qvel, reference.qvel, atol=1e-10)
+            self.assertTrue(backend.data.xfrc_applied[body, 3:].any())
+            backend.step(torch.zeros(1, 12))
+            self.assertFalse(backend.data.xfrc_applied.any())
+            with self.assertRaisesRegex(ValueError, "point_local_m"):
+                invalid = LinkPointForces(torch.zeros(1, 3), point_forces.force_world_n)
+                backend.step(torch.zeros(1, 12), link_point_forces=invalid)
+        finally:
+            backend.close()
+
+    @unittest.skipUnless(os.environ.get("RL_GO2_TEST_GENESIS") == "1", "opt-in Genesis CPU kernel compilation")
+    def test_genesis_point_force_targets_each_environment_link(self):
+        config = deepcopy(self.config)
+        config.update(backend="genesis", device="cpu", num_envs=3)
+        config["scene"]["sim_options"]["gravity"] = [0, 0, 0]
+        robot = next(entity for entity in config["scene"]["entities"] if entity.get("robot"))
+        robot.update(position=[0, 0, 2], rotation=[2**-0.5, 0, 0, 2**-0.5])
+        backend = make_backend(config)
+        try:
+            self.assertEqual(len(backend.link_names), 13)
+            shape = (3, len(backend.link_names), 3)
+            point_forces = LinkPointForces(torch.zeros(shape), torch.zeros(shape))
+            calf = backend.link_names.index("FR_calf")
+            base = backend.link_names.index("base")
+            point_forces.point_local_m[0, calf, 2] = -0.2
+            point_forces.point_local_m[1, base, 1] = 0.2
+            point_forces.force_world_n[0, calf, 1] = 20
+            point_forces.force_world_n[1, base, 1] = 20
+            backend.step(torch.zeros(3, 12), link_point_forces=point_forces)
+            state = backend.read_state()
+            torch.testing.assert_close(state.joint_velocity[2], torch.zeros(12), atol=1e-5, rtol=0)
+            self.assertGreater(float(state.joint_velocity[0, 1:3].abs().max()), 0.01)
+            self.assertFalse(torch.allclose(state.joint_velocity[0], state.joint_velocity[1]))
+            # In compatibility mode Genesis exposes Cartesian velocity on the next step.
+            backend.step(torch.zeros(3, 12))
+            state = backend.read_state()
+            self.assertLess(float(state.angular_velocity[1, 2]), -0.01)
+            self.assertGreater(float(state.linear_velocity[1, 1]), 0.001)
+            torch.testing.assert_close(state.angular_velocity[2], torch.zeros(3), atol=1e-5, rtol=0)
         finally:
             backend.close()
 
