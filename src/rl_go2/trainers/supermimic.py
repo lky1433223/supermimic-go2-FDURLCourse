@@ -19,6 +19,7 @@ from torch import nn
 from rl_go2.backends import LinkPointForces
 from rl_go2.config import FOOT_NAMES, MODEL_PARAMETER_KEYS
 from rl_go2.env import QuadrupedEnv
+from rl_go2.observations import SensorReadings
 from rl_go2.point_push import Go2PushGeometry, PointPushConfig, PointPushScheduler, PushState
 from rl_go2.trainers.model_learning import DynamicsModel, ReplayBuffer, RunningNorm, heading, local_state, mlp, pack, unpack
 from rl_go2.trainers.terrain_features import TerrainHeightScan
@@ -178,14 +179,17 @@ def critic_input(state, previous_action, context, features):
 
 
 def imagined_step(env, model, actor, cfg, state, previous_action, context,
-                  wrenches_world: torch.Tensor | None = None):
+                  wrenches_world: torch.Tensor | None = None, *,
+                  observation: torch.Tensor | None = None):
     robot = unpack(state)
     features = env.task.model_features(robot, context)
     inputs = None
     if cfg.bootstrap_weight:
         with torch.no_grad():
             inputs = critic_input(state, previous_action, context, features)
-    action = actor(env.task.observe(robot, previous_action, context))
+    if observation is None:
+        observation = env.task.observe(robot, previous_action, context)
+    action = actor(observation)
     _, action = env.controller.target(action)
     next_state, torque = model(state, action, previous_action, features, wrenches_world)
     next_robot = unpack(next_state)
@@ -219,6 +223,9 @@ def imagined_rollout(env, model, actor, critic, seed, cfg, *, step=None, returns
     if step is None:
         step = partial(imagined_step, env, model, actor, cfg)
     state, previous_action, context = seed['state'], seed['previous_action'], context_from(seed)
+    observation_noise = env.observation_noise
+    noise_history = {key.removeprefix('sensor_history/'): value for key, value in seed.items()
+                     if key.startswith('sensor_history/')}
     initial_wrenches = seed.get('link_wrenches_world')
     zero_wrenches = None if initial_wrenches is None else torch.zeros_like(initial_wrenches)
     push_state = None if push_scheduler is None else PushState.from_replay(seed)
@@ -238,10 +245,20 @@ def imagined_rollout(env, model, actor, critic, seed, cfg, *, step=None, returns
             wrenches_world = push_scheduler.wrenches(push_state, link_quat)
         else:
             wrenches_world = initial_wrenches if index == 0 else zero_wrenches
-        if wrenches_world is None:
-            state, action, reward, continuation, critic_obs = step(state, previous_action, context)
+        step_args = (state, previous_action, context)
+        if wrenches_world is not None:
+            step_args += (wrenches_world,)
+        if observation_noise is None:
+            result = step(*step_args)
         else:
-            state, action, reward, continuation, critic_obs = step(state, previous_action, context, wrenches_world)
+            if index == 0:
+                observation = seed['actor_observation']
+            else:
+                robot = unpack(state)
+                readings, noise_history = observation_noise.apply(SensorReadings.from_state(robot), noise_history)
+                observation = env.task.observe(robot, previous_action, context, readings=readings)
+            result = step(*step_args, observation=observation)
+        state, action, reward, continuation, critic_obs = result
         rewards.append(reward)
         continuations.append(continuation)
         if cfg.bootstrap_weight:
@@ -417,11 +434,16 @@ class Trainer:
         task_metrics = {}
         for index in range(self.cfg.collect_steps):
             obs = self.env.observe()
+            sensor_record = {}
+            if self.env.observation_noise is not None:
+                sensor_record['actor_observation'] = obs
+                sensor_record.update({f'sensor_history/{key}': value for key, value in self.env.noise_history.items()})
             if update_actor_norm:
                 self.actor.norm.update(obs)
             action = self.actor(obs)
             if self.driver is not None:
-                driver_action = self.driver(obs)
+                driver_obs = obs if self.env.observation_noise is None else self.env.observe(clean=True)
+                driver_action = self.driver(driver_obs)
                 if driver_action.shape != action.shape or not torch.isfinite(driver_action).all():
                     raise ValueError('Data driver must return finite [num_envs, num_actions] actions')
                 action = torch.where(self.driver_mask[:, None], driver_action, action)
@@ -448,6 +470,7 @@ class Trainer:
                 )
             record.update({f'context/{key}': value for key, value in transition.context.items()})
             record.update(push_record)
+            record.update(sensor_record)
             if any(not torch.isfinite(x).all() for x in record.values()) or not torch.isfinite(reward).all():
                 raise RuntimeError('Non-finite simulation transition')
             if callable(getattr(self.env.task, 'metrics', None)):
@@ -514,7 +537,7 @@ class Trainer:
         observation = self.env.task.observe(unpack(seed['state']), seed['previous_action'], context_from(seed))
         with torch.no_grad():
             _, target = self.env.controller.target(self.driver(observation))
-        _, action = self.env.controller.target(self.actor(observation))
+        _, action = self.env.controller.target(self.actor(seed.get('actor_observation', observation)))
         return (action - target).square().mean()
 
     def warmup_actor(self):

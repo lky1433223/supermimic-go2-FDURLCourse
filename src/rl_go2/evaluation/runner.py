@@ -7,7 +7,7 @@ from pathlib import Path
 import socket
 import sys
 
-from rl_go2.config import FLAT_SCENE_PATH, load_scene, validate_scene_robot
+from rl_go2.config import FLAT_SCENE_PATH, load_scene, resolve_run_asset, validate_scene_robot
 
 from .executor import execute_plan, summarize_plan
 from .push_events import build_push_events
@@ -47,17 +47,18 @@ def write_json(path, value):
 
 def output_records(plan: EvaluationPlan, condition_name: str) -> dict[Path, EvaluationPlan]:
     """Choose output directories for the plan and check names used in paths."""
-    if not plan.scenes:
+    if not plan.scenes and not plan.separate_conditions:
         return {Path(condition_name): plan}
     cases = {}
     for trial in plan.trials:
-        scene, condition = trial.scene, trial.condition.name
-        if any(not name or name in ('.', '..') or Path(name).name != name for name in (scene, condition)):
+        parts = (trial.condition.name,) if trial.scene is None else (trial.scene, trial.condition.name)
+        if any(not name or name in ('.', '..') or Path(name).name != name for name in parts):
             raise ValueError('Scene and condition names must be single directory names')
-        cases.setdefault((scene, condition), []).append(trial)
+        cases.setdefault(Path(*parts), []).append(trial)
     return {
-        Path(scene) / condition: replace(plan, trials=tuple(trials), scenes={scene: plan.scenes[scene]})
-        for (scene, condition), trials in cases.items()
+        directory: replace(plan, trials=tuple(trials), scenes={trial.scene: plan.scenes[trial.scene]
+                           for trial in trials if trial.scene is not None})
+        for directory, trials in cases.items()
     }
 
 
@@ -73,7 +74,7 @@ def configure_evaluation_scene(config: dict, plan: EvaluationPlan) -> dict:
     training_robot = next(entity for entity in training_scene['entities'] if entity.get('robot'))
     flat_scene = load_scene(FLAT_SCENE_PATH)
     flat_robot = next(entity for entity in flat_scene['entities'] if entity.get('robot'))
-    flat_robot.update(id=training_robot['id'], file=training_robot['file'])
+    flat_robot.update(id=training_robot['id'], file=resolve_run_asset(training_robot['file']))
     flat_scene['sim_options'] = training_scene['sim_options'].copy()
     return {**config, 'scene': flat_scene}
 
@@ -95,6 +96,7 @@ def run_evaluation(args, task):
     conditions = tuple({trial.condition.name: trial.condition for trial in plan.trials}.values())
     condition_name = conditions[0].name if len(conditions) == 1 else 'comparison'
     records = output_records(plan, condition_name)
+    separate_cases = bool(plan.scenes) or plan.separate_conditions
     if task.environment_task is not None:
         config['task']['name'] = task.environment_task
     if plan.episode_seconds is not None:
@@ -124,8 +126,10 @@ def run_evaluation(args, task):
     metadata['trials'] = [asdict(trial) for trial in plan.trials]
     if plan.scenes:
         metadata['scenes'] = plan.scenes
+    if separate_cases:
         metadata['cases'] = [
-            {'scene': case.trials[0].scene, 'condition': case.trials[0].condition.name,
+            {'condition': case.trials[0].condition.name,
+             **({'scene': case.trials[0].scene} if case.trials[0].scene is not None else {}),
              'assessment': str(directory / 'assessment.json'),
              **({'video': str(directory / 'replay.mp4')} if args.video else {})}
             for directory, case in records.items()
@@ -155,7 +159,7 @@ def run_evaluation(args, task):
             video_metadata['video_view'] = views[0]
         first_video = next(iter(records)) / 'replay.mp4'
         video_metadata['video_encoding'] = EvaluationVideo(dest / first_video, views=views).encoding
-        if not plan.scenes:
+        if not separate_cases:
             video_metadata['video'] = str(first_video)
     metadata.update(video_metadata)
     write_json(dest / 'eval-config.json', metadata)
@@ -169,7 +173,9 @@ def run_evaluation(args, task):
             report = execute_plan(config, policy, seeds, case, viewer=args.viewer, video=video,
                                   push_events=push_events)
         trial = case.trials[0]
-        case_metadata = {**common, 'condition': trial.condition.name, 'scene': trial.scene} if plan.scenes else common
+        case_metadata = {**common, 'condition': trial.condition.name} if separate_cases else common
+        if trial.scene is not None:
+            case_metadata['scene'] = trial.scene
         height_maps = case.scene_config(config, trial)['scene'].get('height_maps')
         if height_maps:
             case_metadata['height_maps'] = height_maps
@@ -178,7 +184,7 @@ def run_evaluation(args, task):
 
     assessment = {**common, **summarize_plan(config, plan, results)}
     summary = {key: value for key, value in assessment.items() if key != 'per_case' or 'groups' not in assessment}
-    if plan.scenes:
+    if separate_cases:
         summary['cases'] = metadata['cases']
     else:
         summary['assessment'] = f'{condition_name}/assessment.json'

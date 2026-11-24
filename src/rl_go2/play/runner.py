@@ -6,6 +6,7 @@ import time
 
 import torch
 
+from rl_go2.config import REPO_ROOT, resolve_run_asset
 from rl_go2.env import QuadrupedEnv
 from rl_go2.evaluation.conditions import NOMINAL_SAMPLE, NOMINAL_SLIDING
 from rl_go2.evaluation.runner import load_policy
@@ -21,21 +22,10 @@ def load_inputs(args: argparse.Namespace) -> tuple[dict, torch.nn.Module, Path, 
     if (training / 'training').is_dir():
         training /= 'training'
     config = json.loads((training / 'config.json').read_text())
-    repo = Path(__file__).resolve().parents[3]
     for entity in config['scene']['entities']:
-        if 'file' not in entity:
-            continue
-        original = Path(entity['file'])
-        if original.is_file():
-            continue
-        parts = original.parts
-        if 'assets' not in parts:
-            raise FileNotFoundError(f'Cannot relocate scene asset: {original}')
-        local = repo.joinpath(*parts[parts.index('assets'):])
-        if not local.is_file():
-            raise FileNotFoundError(f'Scene asset missing: {original} (local candidate: {local})')
-        entity['file'] = str(local)
-    config['scene'] = playback_scene(config['scene'], config['robot'], args.seed, repo)
+        if 'file' in entity:
+            entity['file'] = resolve_run_asset(entity['file'])
+    config['scene'] = playback_scene(config['scene'], config['robot'], args.seed, REPO_ROOT)
     config.update(backend=args.backend, device=args.device, num_envs=1,
                   curriculum={'name': 'none'}, seed=args.seed)
     config['viewer_options'] = {'enable_help_text': False, 'enable_default_keybinds': False}

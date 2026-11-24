@@ -1,4 +1,4 @@
-"""Physical evaluation conditions, independent of robot motion tasks."""
+"""Evaluation conditions, independent of robot motion tasks."""
 from copy import deepcopy
 from dataclasses import dataclass
 from random import Random
@@ -21,10 +21,15 @@ class EvaluationCondition:
     base_com: dict | None = None
     friction_phases: tuple[FrictionPhase, ...] = ()
     point_push: PushSpec | None = None
+    observation_noise: dict | None = None
 
     def validate(self) -> None:
         """Validate all physical fields before loading the evaluated policy."""
         config = self.apply({})
+        if self.observation_noise is not None:
+            from rl_go2.observation_noise import ObservationNoise
+
+            ObservationNoise.from_config(config)
         base_mass_scale_range(config)
         base_com_offset_ranges(config)
         ranges = foot_friction_ranges(config)
@@ -47,12 +52,10 @@ class EvaluationCondition:
     def apply(self, config: dict) -> dict:
         """Build the environment configuration for this condition."""
         domain = {}
-        parameters = {'foot_ground_friction': self.foot_ground_friction,
-                      'base_mass': self.base_mass, 'base_com': self.base_com}
+        parameters = {'foot_ground_friction': self.foot_ground_friction, 'base_mass': self.base_mass,
+                      'base_com': self.base_com, 'observation_noise': self.observation_noise}
         for key, value in parameters.items():
-            if value is None:
-                domain.pop(key, None)
-            else:
+            if value is not None:
                 domain[key] = deepcopy(value)
         return {**config, 'domain_randomization': domain}
 

@@ -7,6 +7,8 @@ from rl_go2.backends import LinkPointForces, make_backend
 from rl_go2.config import base_com_offset_ranges, base_mass_scale_range, foot_friction_ranges, foot_friction_switch_seconds
 from rl_go2.control import JointPositionControl
 from rl_go2.curriculum import make_curriculum
+from rl_go2.observation_noise import NoiseHistory, ObservationNoise
+from rl_go2.observations import SensorReadings
 from rl_go2.state import RobotState
 from rl_go2.tasks import get_task_type
 
@@ -32,6 +34,9 @@ class QuadrupedEnv:
         self.config = config
         task_type = get_task_type(config["task"]["name"])
         task_type.validate_config(config["task"], config["robot"])
+        self.observation_noise = ObservationNoise.from_config(config)
+        self.noise_history: NoiseHistory = {}
+        self._sensor_readings: SensorReadings | None = None
         self.curriculum = make_curriculum(config["curriculum"])
         self.backend = backend if backend is not None else make_backend(config, viewer)
         self.device = self.backend.device
@@ -147,7 +152,9 @@ class QuadrupedEnv:
         self._fixed_terrain_index = index
         self.reset()
 
-    def reset(self, env_ids=None, metrics=None):
+    def reset(self, env_ids: torch.Tensor | None = None, metrics: dict | None = None) -> torch.Tensor:
+        """Reset the selected environments and seed their sensor histories from the new episode."""
+        reset_all = env_ids is None
         if env_ids is None:
             env_ids = torch.arange(self.num_envs, device=self.device)
         updates = self.curriculum.on_reset(env_ids, environment_steps=self.environment_steps, metrics=metrics or {})
@@ -167,10 +174,29 @@ class QuadrupedEnv:
         self.episode_length_buf[env_ids] = 0
         self.episode_return[env_ids] = 0
         self.previous_action[env_ids] = 0
+        if self.observation_noise is not None:
+            readings = SensorReadings.from_state(self.state)
+            if reset_all:
+                self._sensor_readings, self.noise_history = self.observation_noise.apply(readings)
+            elif env_ids.numel():
+                self._reset_sensor_readings(readings, env_ids)
         return self.observe()
 
-    def observe(self):
-        return self.task.observe(self.state, self.previous_action)
+    def _reset_sensor_readings(self, readings: SensorReadings, env_ids: torch.Tensor) -> None:
+        selected = SensorReadings(*(reading[env_ids] for reading in readings))
+        reset_readings, reset_history = self.observation_noise.apply(selected)
+        self._sensor_readings = SensorReadings(*(
+            old.index_copy(0, env_ids, new)
+            for old, new in zip(self._sensor_readings, reset_readings, strict=True)
+        ))
+        self.noise_history = {key: self.noise_history[key].index_copy(0, env_ids, value)
+                              for key, value in reset_history.items()}
+
+    def observe(self, *, clean: bool = False) -> torch.Tensor:
+        """Return the current actor observation without advancing any sensor history."""
+        if clean or self._sensor_readings is None:
+            return self.task.observe(self.state, self.previous_action)
+        return self.task.observe(self.state, self.previous_action, readings=self._sensor_readings)
 
     def step(
         self,
@@ -223,6 +249,9 @@ class QuadrupedEnv:
         old_action = self.previous_action.clone() if self.record_transitions else None
         # Keep a normal persistent buffer so reset also works outside inference_mode.
         self.previous_action.copy_(clipped_action)
+        if self.observation_noise is not None:
+            readings = SensorReadings.from_state(self.state)
+            self._sensor_readings, self.noise_history = self.observation_noise.apply(readings, self.noise_history)
         extras = {"time_outs": truncated, "terminated": terminated, "truncated": truncated}
         # Allocate only when needed; buffers returned to the learner never alias future in-place updates.
         if self.record_transitions:

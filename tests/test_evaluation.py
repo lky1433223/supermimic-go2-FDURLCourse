@@ -90,7 +90,9 @@ class EvaluationTests(unittest.TestCase):
         step_scene = terrain_plan.scenes['step-6cm']
         step_scene['sim_options']['dt'] = 0.004
         robot = next(entity for entity in step_scene['entities'] if entity.get('robot'))
-        robot.update(file='/training/assets/go2.xml', position=[1.3, 0, 0.48])
+        remote_robot = '/training/assets/robots/go2/go2.xml'
+        local_robot = Path(__file__).resolve().parents[1] / 'assets/robots/go2/go2.xml'
+        robot.update(file=remote_robot, position=[1.3, 0, 0.48])
         config = {'scene': step_scene, 'robot': {'entity_id': robot['id']}}
         for name, task in TASKS.items():
             with self.subTest(task=name):
@@ -101,9 +103,33 @@ class EvaluationTests(unittest.TestCase):
                 ground, flat_robot = scene['entities']
                 self.assertEqual(ground['type'], 'plane')
                 self.assertEqual(flat_robot['position'], [0, 0, 0.42])
-                self.assertEqual(flat_robot['file'], '/training/assets/go2.xml')
+                self.assertEqual(flat_robot['file'], str(local_robot))
                 self.assertEqual(scene['sim_options']['dt'], 0.004)
         self.assertEqual(robot['position'], [1.3, 0, 0.48])
+        self.assertEqual(robot['file'], remote_robot)
+
+    def test_only_sensor_noise_task_enables_sensor_noise(self):
+        config = {'domain_randomization': {'observation_noise': {
+            'angular_velocity': [{'type': 'uniform', 'low': -0.4, 'high': 0.4}],
+        }}}
+        for name, task in TASKS.items():
+            if name == 'sensor-noise':
+                continue
+            for trial in task.build_plan().trials:
+                self.assertNotIn('observation_noise', trial.condition.apply(config)['domain_randomization'])
+        plan = TASKS['sensor-noise'].build_plan()
+        cases = output_records(plan, 'comparison')
+        self.assertEqual(list(map(str, cases)), ['nominal', 'uniform', 'combined', 'go2-reference'])
+        for path, case in cases.items():
+            condition = case.trials[0].condition
+            domain = condition.apply(config)['domain_randomization']
+            self.assertEqual('observation_noise' in domain, path.name != 'nominal')
+            if path.name in ('uniform', 'combined'):
+                self.assertEqual(domain['observation_noise']['angular_velocity'][0]['high'], 0.05)
+            if path.name == 'go2-reference':
+                noise = domain['observation_noise']
+                self.assertEqual(noise['joint_velocity'][0]['high'], 1.5)
+                self.assertTrue(all(chain[-1] == {'type': 'delay', 'steps': 1} for chain in noise.values()))
 
     def test_terrain_plan_resolves_one_box_per_step_and_partitions_outputs(self):
         task = TASKS['terrain']

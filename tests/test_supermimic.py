@@ -42,6 +42,62 @@ class SuperMimicTests(unittest.TestCase):
         config = TrainConfig()
         self.assertTrue(all((config.tf32, config.fused_adam, config.compile_training, config.cuda_graph)))
 
+    def test_sensor_noise_history_continues_in_imagination(self):
+        self.config['domain_randomization'] = {'observation_noise': {
+            'attitude': [{'type': 'uniform', 'low': [-0.02, 0, 0], 'high': [0.02, 0, 0]}],
+            'joint_position': [{'type': 'bias', 'offset': 0.1}, {'type': 'delay', 'steps': 1}],
+            'joint_velocity': [{'type': 'gaussian', 'std': 0.2}, {'type': 'dropout', 'probability': 1}],
+        }}
+        trainer = self.make_trainer()
+        env = trainer.env
+        initial = env.observe()
+        torch.testing.assert_close(env.observe(), initial)
+        torch.testing.assert_close(initial[:, 3:6].norm(dim=-1), torch.ones(2))
+        torch.testing.assert_close(initial[:, 9:21] - env.observe(clean=True)[:, 9:21], torch.full((2, 12), 0.1))
+        env.backend.default = env.backend.default + 0.2
+        env.step(torch.zeros(2, 12))
+        torch.testing.assert_close(env.observe()[:, 9:33], initial[:, 9:33])
+        env.reset(torch.tensor([0]))
+        torch.testing.assert_close(env.observe()[0, 9:21], torch.full((12,), 0.3))
+        torch.testing.assert_close(env.observe()[1, 9:33], initial[1, 9:33])
+
+        trainer.collect()
+        seed = trainer.replay.sample_starts(2)
+        seen = []
+
+        def record_input(module, args):
+            seen.append(args[0].detach())
+
+        handle = trainer.actor.register_forward_pre_hook(record_input)
+        try:
+            objective, _, _ = imagined_rollout(env, trainer.model, trainer.actor, trainer.critic, seed, self.cfg)
+            objective.backward()
+        finally:
+            handle.remove()
+        torch.testing.assert_close(seen[0], seed['actor_observation'])
+        torch.testing.assert_close(seen[1][:, 9:21], seed['sensor_history/joint_position/1'][:, 0] - env.task.default)
+        torch.testing.assert_close(seen[-1][:, 21:33], seen[0][:, 21:33])
+
+    def test_frame_delay_is_shared_by_sensors_and_fixed_until_reset(self):
+        self.config['domain_randomization'] = {'observation_noise': {
+            'frame_delay_steps': [0, 1],
+            'projected_gravity': [{'type': 'bias', 'offset': [0.05, 0.0, -0.05]}],
+        }}
+        with patch('rl_go2.observation_noise.torch.randint', return_value=torch.tensor([0, 1])) as sample_delay:
+            trainer = self.make_trainer()
+            env = trainer.env
+            env.backend.default += 0.2
+            observed, _, _, _ = env.step(torch.zeros(2, 12))
+            sample_delay.assert_called_once_with(0, 2, (2,), device=env.device)
+        torch.testing.assert_close(observed[:, 3:6], torch.tensor([[0.05, 0.0, -1.05]]).expand(2, -1))
+        torch.testing.assert_close(observed[:, 9:21], torch.tensor([[0.2], [0.0]]).expand(-1, 12))
+
+        with patch('rl_go2.observation_noise.torch.randint', return_value=torch.tensor([0])) as sample_delay:
+            env.reset(torch.tensor([1]))
+            sample_delay.assert_called_once_with(0, 2, (1,), device=env.device)
+        torch.testing.assert_close(env.observe()[:, 9:21], torch.full((2, 12), 0.2))
+        self.assertEqual(env.noise_history['frame_delay/steps'].tolist(), [0, 0])
+
     def test_terrain_scan_reads_exact_tiles_in_the_yaw_frame(self):
         scene = load_scene(ROOT / 'configs/scenes/rough_ground.yaml')
         patch = scene['height_maps']['rough']

@@ -5,7 +5,8 @@ import torch
 from rl_go2.config import MODEL_PARAMETER_KEYS
 
 from rl_go2.state import rotate_inverse
-from rl_go2.observations import OBSERVATION_TERMS, policy_observation
+from rl_go2.observations import OBSERVATION_TERMS, SensorReadings, policy_observation
+from rl_go2.state import RobotState
 
 
 class FlatWalkTask:
@@ -73,11 +74,16 @@ class FlatWalkTask:
                 rotate_inverse(state.quaternion, state.angular_velocity),
                 rotate_inverse(state.quaternion, gravity))
 
-    def observe(self, state, previous_action, context=None):
+    def observe(self, state: RobotState, previous_action: torch.Tensor,
+                context: dict[str, torch.Tensor] | None = None, *,
+                readings: SensorReadings | None = None) -> torch.Tensor:
+        """Build the actor input from optional simulated sensor readings."""
         commands = self.commands if context is None else context["commands"]
-        angular = rotate_inverse(state.quaternion, state.angular_velocity)
-        return policy_observation(state.quaternion, angular, state.joint_position, state.joint_velocity,
-                                  commands, previous_action, self.default, self.config["observation_scales"])
+        if readings is None:
+            readings = SensorReadings.from_state(state)
+        return policy_observation(readings.attitude, readings.angular_velocity, readings.joint_position,
+                                  readings.joint_velocity, commands, previous_action, self.default,
+                                  self.config["observation_scales"], projected_gravity=readings.projected_gravity)
 
     def reward(self, state, action, previous_action, torque, context=None):
         commands = self.commands if context is None else context["commands"]

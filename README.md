@@ -422,6 +422,34 @@ uv run --extra train python scripts/evaluate.py --run-dir output/flat-supermimic
 vx/vy/yaw RMSE 分别为 0.0586 m/s、0.0179 m/s、0.0404 rad/s。
 该结果来自单次训练，不包含步态质量验收；模型、日志和视频均保留在被 Git 忽略的 `output/` 内。
 
+### 传感器观测泛化
+
+`terrain_supermimic_push.yaml` 在 `domain_randomization.observation_noise` 下启用了宇树 Go2 RL Lab 的四路均匀噪声。
+陀螺仪为 ±0.20 rad/s，投影重力每分量为 ±0.05，关节角为 ±0.01 rad，关节速度为 ±1.50 rad/s。
+`angular_velocity`、`projected_gravity`、`joint_position` 和 `joint_velocity` 各自接收按顺序执行的噪声列表。
+也可以通过 `attitude` 加入姿态误差，以机身三轴旋转向量（rad）表示，随后计算投影重力。
+`uniform` 用 `low` 和 `high`，`gaussian` 用 `std`，`bias` 用 `offset`。这些数值可以是标量或逐轴、逐关节列表。
+`delay.steps` 按控制步计，`dropout.probability` 按该控制步丢掉整路读数的概率计，丢包时沿用上一次有效读数。
+训练使用 `frame_delay_steps: [0, 1]`，各环境在每回合开始时等概率抽取 0 或 1 个控制步的延迟（50 Hz 下是 0 或 20 ms）。
+四路观测一起延迟，回合内固定，命令和上一动作保持当前步的值。默认缺省延迟，空噪声链关闭该路扰动。
+训练和评测幅度尚未用本项目的 Go2 实测标定。
+
+`sensor-noise` 评测在平地上用相同动作和种子对比 `nominal`、`uniform`、`combined`、`go2-reference` 四种条件。
+报告和可选视频分别保存在各条件目录。其他评测任务使用干净观测。
+
+`go2-reference` 用 ±0.2 rad/s 的陀螺仪噪声、±0.01 rad 的关节角噪声和 ±1.5 rad/s 的关节速度噪声。
+宇树配置的投影重力扰动为每分量 ±0.05。该评测工况用机身前轴和侧轴各 ±0.05 rad 的小旋转近似水平姿态附近的扰动，
+再从四元数计算重力方向。幅值来自 sim-to-real 训练配置，真实传感器误差仍待实测。
+[Unitree Go2 RL Lab 配置](https://github.com/unitreerobotics/unitree_rl_lab/blob/main/source/unitree_rl_lab/unitree_rl_lab/tasks/locomotion/robots/go2/velocity_env_cfg.py)
+
+该工况模拟整帧观测固定滞后一个 policy 步，当前 50 Hz 配方对应 20 ms。有线 Go2 Pro 公开测试的
+`LowState` 到包间隔中位数约 2 ms，命令到力矩反馈的中位数约 5.4–7.8 ms。整帧 20 ms 是按本项目控制步长选定的评测条件。
+[Go2 Pro 有线链路实测](https://github.com/AstroKido/go2pro_benchmarks#tests--results)
+
+```bash
+python scripts/evaluate.py --task sensor-noise --backend mujoco --run-dir output/<训练目录> --iteration <轮次>
+```
+
 ### 为什么旧训练没有改善
 
 - **覆盖不足。** 旧检查只有 9632 条转移，多数接近站立。采样轨迹上旧 actor 动作标准差约 0.10，而走路 driver 约 0.96。

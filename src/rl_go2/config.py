@@ -9,7 +9,8 @@ import yaml
 from rl_go2.scene_geometry import resolve_terrain_entities
 from rl_go2.tasks import validate_task_name
 
-FLAT_SCENE_PATH = Path(__file__).resolve().parents[2] / "configs" / "scenes" / "flat.yaml"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+FLAT_SCENE_PATH = REPO_ROOT / "configs" / "scenes" / "flat.yaml"
 FOOT_NAMES = ("FR", "FL", "RR", "RL")
 FRICTION_TERMS = ("sliding", "torsional", "rolling")
 MODEL_PARAMETER_KEYS = ("foot_ground_friction", "base_mass_kg", "base_com_offset_m")
@@ -174,6 +175,20 @@ def validate_scene_robot(scene: dict, robot: dict) -> None:
         raise ValueError("Scene must contain exactly one robot matching robot.entity_id")
 
 
+def resolve_run_asset(file: str) -> str:
+    """Resolve a saved asset path, falling back to this checkout for copied runs."""
+    original = Path(file)
+    if original.is_file():
+        return file
+    parts = original.parts
+    if 'assets' not in parts:
+        raise FileNotFoundError(f'Cannot relocate scene asset: {original}')
+    local = REPO_ROOT.joinpath(*parts[parts.index('assets'):])
+    if not local.is_file():
+        raise FileNotFoundError(f'Scene asset missing: {original} (local candidate: {local})')
+    return str(local)
+
+
 def joint_position_bounds(
     robot: dict,
 ) -> tuple[tuple[float, float], ...] | None:
@@ -261,6 +276,10 @@ def load_experiment(path):
     foot_friction_ranges(config)
     base_mass_scale_range(config)
     base_com_offset_ranges(config)
+    if 'observation_noise' in config.get('domain_randomization', {}):
+        from rl_go2.observation_noise import ObservationNoise
+
+        ObservationNoise.from_config(config)
     from rl_go2.point_push import PointPushConfig
 
     push = PointPushConfig.from_config(config)

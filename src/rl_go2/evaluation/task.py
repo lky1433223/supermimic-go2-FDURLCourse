@@ -55,6 +55,7 @@ class EvaluationPlan:
     report: dict
     episode_seconds: float
     scenes: dict[str, dict] = field(default_factory=dict)
+    separate_conditions: bool = False
 
     def select_trials(
         self, *, conditions: list[str] | None = None, motions: list[str] | None = None
@@ -107,6 +108,7 @@ class EvaluationTask:
     default_seeds: tuple[int, ...] = (1,)
     environment_task: str | None = None
     evaluation_groups: tuple[EvaluationGroup, ...] = ()
+    separate_conditions: bool = False
 
     def trial_combinations(self) -> Iterator[tuple[str, SceneSpec | None, EvaluationCondition, MotionTask]]:
         """Yield declarations in environment reuse order."""
@@ -161,4 +163,5 @@ class EvaluationTask:
             raise ValueError(f'{self.TASK} must declare at least one condition and motion')
         if self.episode_seconds < max(trial.motion.duration_seconds for trial in trials):
             raise ValueError('Episode duration must cover every motion')
-        return EvaluationPlan(tuple(trials), self.report.copy(), self.episode_seconds, scenes)
+        return EvaluationPlan(tuple(trials), self.report.copy(), self.episode_seconds, scenes,
+                              separate_conditions=self.separate_conditions)
