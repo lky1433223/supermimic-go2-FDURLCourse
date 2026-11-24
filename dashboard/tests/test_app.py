@@ -45,7 +45,8 @@ class DashboardTest(unittest.TestCase):
         result = self.client.get(self.url, params={'case': 'rough/nominal'})
         self.assertEqual(result.status_code, 200)
         self.assertIn('rough/nominal', result.text)
-        self.assertIn('低码率预览', result.text)
+        self.assertIn('data-hls-url', result.text)
+        self.assertIn('省流', result.text)
         self.assertIn('preload="none"', result.text)
         self.assertNotIn('<video src=', result.text)
 

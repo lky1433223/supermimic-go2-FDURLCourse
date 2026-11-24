@@ -25,7 +25,7 @@ def prepare(source: Path, seconds: float | None = None) -> Path:
                 command.extend(['-t', str(seconds)])
             command.extend([
                 '-an', '-vf', f'scale=-2:min({height}\\,ih),fps=20',
-                '-c:v', 'libx264', '-preset', 'veryfast', '-threads', '2',
+                '-c:v', 'libx264', '-preset', 'veryfast', '-threads', '8',
                 '-pix_fmt', 'yuv420p', '-b:v', f'{bitrate}k',
                 '-maxrate', f'{bitrate}k', '-bufsize', f'{bitrate * 2}k',
                 '-g', '80', '-keyint_min', '80', '-sc_threshold', '0',

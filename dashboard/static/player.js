@@ -43,7 +43,11 @@ function loadVideo(play) {
     hls = null;
   }
   if (useHls && Hls.isSupported()) {
-    hls = new Hls({startLevel: 0, maxBufferLength: 20, backBufferLength: 10});
+    hls = new Hls({
+      startLevel: 0, maxBufferLength: 12, maxMaxBufferLength: 16,
+      backBufferLength: 8, startPosition: position,
+      fragLoadingTimeOut: 130000, fragLoadingMaxRetry: 2,
+    });
     hls.on(Hls.Events.MANIFEST_PARSED, () => {
       hls.currentLevel = quality.value === 'auto' ? -1 : Number(quality.value);
     });
@@ -56,8 +60,8 @@ function loadVideo(play) {
     video.src = useHls ? player.dataset.videoUrl : (quality?.value || player.dataset.videoUrl);
     video.load();
   }
-  showStatus('正在连接 ICC…');
-  stallTimer = setTimeout(() => showStatus('连接耗时较长。', true), 8000);
+  showStatus('正在准备回放，首次播放需要转码…');
+  stallTimer = setTimeout(() => showStatus('正在准备视频分片，可等待或切到原版。', true), 15000);
   if (play) {
     video.play().catch(error => {
       if (error.name === 'NotAllowedError') {

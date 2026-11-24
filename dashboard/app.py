@@ -12,6 +12,15 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from jinja2 import Environment, FileSystemLoader
 
+from dashboard.streaming import (
+    SEGMENT_SECONDS,
+    TranscodeError,
+    duration_seconds,
+    master_playlist,
+    segment_bytes,
+    variant_playlist,
+)
+
 from dashboard.artifacts import (
     ArtifactError,
     Evaluation,
@@ -164,31 +173,55 @@ def create_app(output_root: Path | None = None) -> FastAPI:
     def hls_media(
         run_name: str, iteration: int, evaluation_name: str, media_path: str, case: str = '',
     ) -> Response:
-        """Serve only prepared playlists and segments belonging to a listed case."""
+        """Advertise a seekable replay and transcode only requested segments."""
         try:
             item = find_evaluation(run_name, iteration, evaluation_name)
         except ArtifactError as exc:
             raise HTTPException(404, str(exc)) from exc
         complete = local_file(item.path / 'summary.json') is not None
         complete = complete or local_file(item.path / 'eval-config.json') is None
-        cases = evaluation_cases(item, complete=complete)
-        entry = next((entry for entry in cases if entry.name == case and entry.hls), None)
-        if entry is None or not re.fullmatch(
+        entry = next(
+            (entry for entry in evaluation_cases(item, complete=complete)
+             if entry.name == case and entry.video), None,
+        )
+        if entry is None:
+            raise HTTPException(404, '找不到已完成的录像。')
+        if not re.fullmatch(
             r'master\.m3u8|(?:low|high)/(?:index\.m3u8|segment-\d+\.ts)', media_path,
         ):
             raise HTTPException(404, '找不到 HLS 产物。')
-        path = entry.hls.parent / media_path
-        if path.parent.is_symlink() or local_file(path) is None:
-            raise HTTPException(404, '找不到 HLS 产物。')
-        if path.suffix == '.m3u8':
-            # Carry the case selector to relative variant and segment requests.
-            lines = path.read_text(encoding='utf-8').splitlines()
-            content = '\n'.join(
-                line + '?case=' + quote(case, safe='') if line and not line.startswith('#') else line
-                for line in lines
-            ) + '\n'
-            return Response(content, media_type='application/vnd.apple.mpegurl')
-        return FileResponse(path, media_type='video/mp2t')
+        try:
+            if entry.hls:
+                path = entry.hls.parent / media_path
+                if path.parent.is_symlink() or local_file(path) is None:
+                    raise HTTPException(404, '找不到 HLS 产物。')
+                if path.suffix == '.ts':
+                    return FileResponse(path, media_type='video/mp2t')
+                content = path.read_text(encoding='utf-8')
+            elif media_path == 'master.m3u8':
+                content = master_playlist()
+            elif media_path.endswith('index.m3u8'):
+                content = variant_playlist(duration_seconds(entry.video))
+            else:
+                quality, filename = media_path.split('/')
+                index = int(filename.removeprefix('segment-').removesuffix('.ts'))
+                if index * SEGMENT_SECONDS >= duration_seconds(entry.video):
+                    raise HTTPException(404, '分片编号无效。')
+                return Response(
+                    segment_bytes(entry.video, quality, index), media_type='video/mp2t',
+                    headers={'Cache-Control': 'no-store'},
+                )
+        except (TranscodeError, OSError) as exc:
+            raise HTTPException(503, str(exc)) from exc
+        lines = content.splitlines()
+        content = '\n'.join(
+            line + '?case=' + quote(case, safe='') if line and not line.startswith('#') else line
+            for line in lines
+        ) + '\n'
+        return Response(
+            content, media_type='application/vnd.apple.mpegurl',
+            headers={'Cache-Control': 'no-store'},
+        )
 
     @app.api_route(
         '/runs/{run_name}/eval/{iteration}/{evaluation_name}/artifact/{kind}',
