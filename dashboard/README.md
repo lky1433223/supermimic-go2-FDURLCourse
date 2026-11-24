@@ -28,6 +28,7 @@ ssh -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -N -L 127.0.0.1:8765:1
 - 训练页读取 `training/config.json` 和 `training/metrics.jsonl`。评测按 checkpoint 和套件列出，单项页识别评测根目录、工况子目录、场景和工况两层子目录中的报告与回放。
 - 点击后才请求视频。默认 HLS 支持按网速切档和拖动；原版 MP4 使用 HTTP Range。SSH 掉线后恢复隧道，再用页面的重连按钮继续。
 - 选择自动、省流或清晰时，首次请求会转码当前需要的分片。可随时切换到原版 MP4。
+- 回放下方的逐试次列表显示种子、动作与结果，点击可从该次测试开始播放，支持 HLS 和原版 MP4。定位按所选工况报告的试次顺序、实际步数与时长计算，并计入录像末帧和摔倒后半秒停留。当前连续重置的 rollout 报告缺少逐次重置位置，页面会提示定位信息不足。
 
 ## HLS 回放
 

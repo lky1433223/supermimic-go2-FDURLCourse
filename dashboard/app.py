@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from jinja2 import Environment, FileSystemLoader
 
+from dashboard.chapters import trial_chapters
 from dashboard.streaming import (
     SEGMENT_SECONDS,
     TranscodeError,
@@ -167,6 +168,7 @@ def create_app(output_root: Path | None = None) -> FastAPI:
             report_error=report_error, has_summary=summary is not None,
             has_config=config is not None, metadata=metadata, date=evaluation_label(item),
             totals=trial_totals(report or summary or {}),
+            chapters=trial_chapters(report or {}, metadata) if selected and selected.video else [],
         )
 
     @app.get('/runs/{run_name}/eval/{iteration}/{evaluation_name}/hls/{media_path:path}')

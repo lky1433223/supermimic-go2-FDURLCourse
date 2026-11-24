@@ -61,6 +61,26 @@
         <p id="playback-status" role="status" hidden></p>
         <button id="retry-video" type="button" hidden>重新连接并续播</button>
         <noscript><a href="{{ video_url }}">打开回放</a></noscript>
+        {% if chapters %}
+        <div class="chapter-list table-wrap" aria-label="逐试次跳转">
+          <table>
+            <caption>逐试次跳转</caption>
+            <thead><tr><th>试次 / 时间</th><th>种子</th><th>工况 / 动作</th><th>结果</th></tr></thead>
+            <tbody>
+              {% for chapter in chapters %}
+              <tr>
+                <td><button type="button" data-chapter-start="{{ chapter.start }}" aria-label="播放第 {{ chapter.number }} 次测试">第 {{ chapter.number }} 次 · {{ chapter.time }}</button></td>
+                <td>{{ chapter.seed }}</td>
+                <td>{{ chapter.condition }}<span class="subline">{{ chapter.motion }}</span></td>
+                <td{% if chapter.fell %} class="warning"{% endif %}>{{ chapter.result }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% elif report %}
+        <p class="muted">该报告缺少可用于定位的逐试次录像时间信息。</p>
+        {% endif %}
       </div>
       <script defer src="{{ request.url_for('static', path='vendor/hls.min.js').path }}"></script>
       <script defer src="{{ request.url_for('static', path='player.js').path }}"></script>

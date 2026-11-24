@@ -36,7 +36,13 @@ class DashboardTest(unittest.TestCase):
             self.suite / 'summary.json',
             {'task': 'terrain', 'by_scene': {'rough': {'trials': 2, 'falls': 1}}},
         )
-        self.write_json(scene / 'assessment.json', {'trials': 2, 'falls': 1})
+        self.write_json(scene / 'assessment.json', {
+            'trials': 2, 'falls': 1,
+            'per_case': [
+                {'steps': 51, 'seconds': 1.02, 'fell': True, 'seed': 1, 'case': 'stand'},
+                {'steps': 1000, 'seconds': 20, 'fell': False, 'seed': 2, 'case': 'walk'},
+            ],
+        })
         (scene / 'replay.mp4').write_bytes(b'0123456789')
         (scene / 'replay-preview.mp4').write_bytes(b'01234')
 
@@ -48,6 +54,8 @@ class DashboardTest(unittest.TestCase):
         self.assertIn('data-hls-url', result.text)
         self.assertIn('省流', result.text)
         self.assertIn('preload="none"', result.text)
+        self.assertIn('data-chapter-start="1.55"', result.text)
+        self.assertIn('播放第 2 次测试', result.text)
         self.assertNotIn('<video src=', result.text)
 
         url = self.url + '/artifact/video'

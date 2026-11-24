@@ -73,6 +73,21 @@ function loadVideo(play) {
 
 start.addEventListener('click', () => loadVideo(true));
 retry.addEventListener('click', () => loadVideo(true));
+const chapters = [...document.querySelectorAll('[data-chapter-start]')];
+for (const chapter of chapters) {
+  chapter.addEventListener('click', () => {
+    position = Number(chapter.dataset.chapterStart);
+    savePosition();
+    if (!started || video.readyState < HTMLMediaElement.HAVE_METADATA) {
+      loadVideo(true);
+    } else {
+      pendingPosition = null;
+      video.currentTime = position;
+      video.play().catch(() => showStatus('点击播放器里的播放按钮继续。'));
+    }
+    video.scrollIntoView({block: 'nearest'});
+  });
+}
 quality?.addEventListener('change', () => {
   if (hls && ['auto', '0', '1'].includes(quality.value)) {
     hls.currentLevel = quality.value === 'auto' ? -1 : Number(quality.value);
@@ -86,6 +101,11 @@ video.addEventListener('loadedmetadata', () => {
 video.addEventListener('timeupdate', () => {
   if (video.readyState < HTMLMediaElement.HAVE_METADATA || pendingPosition !== null) return;
   position = video.currentTime;
+  const current = chapters.findLast(chapter => Number(chapter.dataset.chapterStart) <= position);
+  for (const chapter of chapters) {
+    if (chapter === current) chapter.setAttribute('aria-current', 'true');
+    else chapter.removeAttribute('aria-current');
+  }
   if (Math.abs(position - lastSaved) >= 3) {
     savePosition();
     lastSaved = position;
