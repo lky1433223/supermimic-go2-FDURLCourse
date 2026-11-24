@@ -93,9 +93,10 @@ class FrameworkTests(unittest.TestCase):
     def test_training_terrain_weights_and_partial_reset(self):
         config = load_experiment(ROOT / 'configs/experiments/terrain_supermimic_push.yaml')
         limits = config['robot']['joint_position_limits']
-        self.assertEqual(limits['RR_hip_joint'], [-0.837758, 0.837758])
-        self.assertEqual(limits['RL_hip_joint'], limits['RR_hip_joint'])
-        self.assertEqual(limits['FR_hip_joint'], self.config['robot']['joint_position_limits']['FR_hip_joint'])
+        baseline_limits = self.config['robot']['joint_position_limits']
+        for name, baseline in baseline_limits.items():
+            expected = [-0.837758, 0.837758] if name.endswith('_hip_joint') else baseline
+            self.assertEqual(limits[name], expected, name)
         patches = config['scene']['terrain_patches']
         weights = {}
         for patch in patches:
