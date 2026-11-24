@@ -30,8 +30,9 @@ output/<实验目录>/
 评测统一使用 `scripts/evaluate.py`。用 `--list-tasks` 查看可用 task，用 `--help` 查看所有参数。
 用 `--task` 选择评测。`evaluation/tasks/` 下的 task 类声明 `conditions`、`motions`、
 `metrics`、`report`、`episode_seconds` 和结束规则。摩擦、质量、质心与动作都直接在对应文件中修改。
-训练目录的 `training/config.json` 提供机器人、场景和控制参数，物理工况由评测 Python 定义覆盖。
-`conditions.py` 和 `motion_tasks.py` 提供通用数据类，四个类通过基类的 `build_plan()` 展开工况与动作组合。
+训练目录的 `training/config.json` 提供机器人和控制参数。套件默认使用 `configs/scenes/flat.yaml` 的地面和出生位姿，
+并沿用该次训练的机器人资产和仿真参数。声明了场景组合的套件使用所选场景，物理工况由评测 Python 定义覆盖。
+`conditions.py` 和 `motion_tasks.py` 提供通用数据类。评测套件通过基类的 `build_plan()` 展开工况与动作组合。
 生效定义写入 `eval-config.json` 的 `physical_conditions` 和 `motion_tasks`。
 `executor.py` 负责唯一的步进循环，`metrics.py` 采集指标。`rollout` 在计划中声明重置后继续，
 其他评测在当前试次结束后切换下一项。展开后的试次保存为 `eval-config.json` 中的 `trials`。
@@ -111,6 +112,17 @@ Z 轴 ±1 cm，以及三轴同时偏移 (+3, +3, +1) cm。每个种子跑 84 项
 足端组为 8 N 和 12 N。每次持续 0.2 秒，在第 5 秒开始，走停项在第 10 秒开始。
 默认种子 1、2、3，共 126 项。同一受力部位的不同力度复用对应试次的施力连杆、局部落点和世界系方向。
 `eval-config.json` 保存实际点力事件，报告按工况统计摔倒及恢复结果。恢复时间从撤力到满足 0.5 秒稳定判据为止。
+
+### 地形场景对照
+
+`python scripts/evaluate.py --task terrain --run-dir <训练目录>` 用同一策略和标称物理工况在平地、4 cm 和 6 cm 台阶上执行 8 秒直行。
+可加 `--backend genesis` 用同一套件检查 Genesis。`eval-config.json` 的 `scenes` 记录解析后的碰撞几何和机器人出生位姿，
+`summary.json` 按场景汇总试次与摔倒次数。各场景的报告和可选录像保存在 `<场景>/<工况>/`。
+
+`configs/scenes/flat.yaml` 使用单个平面，`configs/scenes/single_step.yaml` 在平面上增加一个固定箱体。
+台阶的 `height_m` 按米配置。调整高度时，箱体前沿和底面位置固定。
+训练配置可用 `scene: ../scenes/single_step.yaml` 选择该场景。评测套件在 `EvaluationGroup` 中选择场景、工况与动作，
+可通过 `SceneSpec.entity_overrides` 为同一个台阶文件指定多个高度。当前地形套件使用平地步行任务的奖励和终止规则。
 
 训练启动时会打印绝对输出路径。历史 `runs/` 及当前已有产物保持原位，仍被忽略，不自动迁移。
 

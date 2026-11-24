@@ -33,7 +33,7 @@ class GenesisBackend:
             vis_options=gs.options.VisOptions(**config.get('vis_options', {})),
         )
         friction_enabled = foot_friction_ranges(config) is not None
-        planes = []
+        surfaces = []
         for entity in config["scene"]["entities"]:
             kwargs = dict(pos=tuple(entity["position"]), quat=tuple(entity["rotation"]))
             if entity.get("robot"):
@@ -46,8 +46,8 @@ class GenesisBackend:
                 else:
                     morph = gs.morphs.Box(size=tuple(entity["size"]), fixed=True, **kwargs)
                 surface = self.scene.add_entity(morph, material=gs.materials.Rigid(friction=entity.get("friction", 0.8)))
-                if friction_enabled and entity["type"] == "plane":
-                    planes.append(surface)
+                if friction_enabled:
+                    surfaces.append(surface)
         self.scene.build(n_envs=self.num_envs)
         self.friction_ratios = None
         if friction_enabled:
@@ -55,9 +55,11 @@ class GenesisBackend:
             # each foot by its calf link and the unique sphere collision geom.
             feet = [[geom.idx for geom in self.robot.get_link(f"{name}_calf").geoms
                      if geom.type == gs.GEOM_TYPE.SPHERE] for name in FOOT_NAMES]
-            if len(planes) != 1 or len(planes[0].geoms) != 1 or any(len(ids) != 1 for ids in feet):
-                raise ValueError("Foot friction requires one plane and one collision sphere on each Go2 calf")
-            self.friction_geom_ids = [ids[0] for ids in feet] + [planes[0].geoms[0].idx]
+            if not surfaces or any(len(surface.geoms) != 1 for surface in surfaces) or any(
+                len(ids) != 1 for ids in feet
+            ):
+                raise ValueError("Foot friction requires one geom per surface and one collision sphere per Go2 calf")
+            self.friction_geom_ids = [ids[0] for ids in feet] + [surface.geoms[0].idx for surface in surfaces]
         self.joints = [self.robot.get_joint(name).dofs_idx_local[0] for name in config["robot"]["joint_names"]]
         self.base = self.robot.get_link(config["robot"]["base_link"])
         links = sorted(self.robot.links, key=lambda link: link.name)
@@ -67,7 +69,8 @@ class GenesisBackend:
 
     def set_foot_ground_friction(self, base, multipliers):
         # Genesis takes the per-component max of the two scaled geoms.
-        ground = base.amin(dim=0, keepdim=True)
+        surface_count = len(self.friction_geom_ids) - base.shape[0]
+        ground = base.amin(dim=0, keepdim=True).expand(surface_count, -1)
         sliding, torsional, rolling = torch.cat((base, ground)).to(self.device).unbind(dim=1)
         solver = self.scene.rigid_solver
         solver.set_geoms_friction(sliding.contiguous(), self.friction_geom_ids)

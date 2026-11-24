@@ -1,12 +1,14 @@
 """Small YAML loader; all authored asset paths are relative to their YAML."""
 
-from pathlib import Path
+from collections.abc import Mapping
 import math
+from pathlib import Path
 
 import yaml
 
 from rl_go2.tasks import validate_task_name
 
+FLAT_SCENE_PATH = Path(__file__).resolve().parents[2] / "configs" / "scenes" / "flat.yaml"
 FOOT_NAMES = ("FR", "FL", "RR", "RL")
 FRICTION_TERMS = ("sliding", "torsional", "rolling")
 MODEL_PARAMETER_KEYS = ("foot_ground_friction", "base_mass_kg", "base_com_offset_m")
@@ -102,7 +104,31 @@ def read_yaml(path):
     return data
 
 
-def load_scene(path):
+STEP_DIMENSIONS = {"length_m", "width_m", "height_m"}
+STEP_POSITION = {"start_x_m", "center_y_m", "base_z_m"}
+
+
+def step_box(entity: dict, overrides: Mapping[str, float]) -> dict:
+    """Resolve an axis-aligned step to a fixed box with sizes in metres."""
+    entity_id = entity["id"]
+    fields = STEP_DIMENSIONS | STEP_POSITION
+    if entity.keys() - (fields | {"id", "type", "friction"}) or overrides.keys() - fields:
+        raise ValueError(f"Unsupported step fields or overrides on {entity_id}")
+    values = {**entity, **overrides}
+    if any(type(values.get(key)) not in (int, float) or not math.isfinite(values[key]) for key in fields):
+        raise ValueError(f"Step {entity_id} must declare finite dimensions and position")
+    length, width, height = (values[key] for key in ("length_m", "width_m", "height_m"))
+    if min(length, width, height) <= 0:
+        raise ValueError(f"Step {entity_id} dimensions must be positive")
+    return {
+        "id": entity_id, "type": "box", "fixed": True,
+        "position": [values["start_x_m"] + length / 2, values["center_y_m"], values["base_z_m"] + height / 2],
+        "size": [length, width, height], "friction": values.get("friction", 0.8),
+    }
+
+
+def load_scene(path: str | Path, *, entity_overrides: Mapping[str, Mapping[str, float]] | None = None) -> dict:
+    """Load backend-ready geometry, optionally overriding named step parameters."""
     path = Path(path).resolve()
     doc = read_yaml(path)
     if doc.get("schema") != "rl-go2.scene/v1":
@@ -119,11 +145,15 @@ def load_scene(path):
     if len(sim["gravity"]) != 3 or not all(math.isfinite(x) for x in sim["gravity"]):
         raise ValueError("gravity must be three finite values")
     seen = set()
-    for entity in scene["entities"]:
+    overrides = dict(entity_overrides or {})
+    for index, entity in enumerate(scene["entities"]):
         eid = entity["id"]
         if eid in seen:
             raise ValueError(f"Duplicate entity id: {eid}")
         seen.add(eid)
+        if entity["type"] == "step":
+            entity = step_box(entity, overrides.pop(eid, {}))
+            scene["entities"][index] = entity
         kind = entity["type"]
         if kind not in {"plane", "box", "mjcf"}:
             raise NotImplementedError(f"Scene entity type not implemented: {kind}")
@@ -145,13 +175,24 @@ def load_scene(path):
             raise ValueError(f"Pose must be finite: {eid}")
         if not math.isclose(sum(x*x for x in entity["rotation"]), 1.0, abs_tol=1e-5):
             raise ValueError(f"rotation must be a unit wxyz quaternion: {eid}")
-        if kind == "box" and (len(entity["size"]) != 3 or min(entity["size"]) <= 0):
+        if kind == "box" and (len(entity["size"]) != 3 or any(
+            not math.isfinite(size) or size <= 0 for size in entity["size"]
+        )):
             raise ValueError(f"Box size must contain three positive full lengths: {eid}")
         if "friction" in entity and (not math.isfinite(entity["friction"]) or entity["friction"] < 0):
             raise ValueError(f"friction must be finite and nonnegative: {eid}")
         if "file" in entity:
             entity["file"] = str((path.parent / entity["file"]).resolve())
+    if overrides:
+        raise ValueError(f"Overrides require named step entities: {sorted(overrides)}")
     return scene
+
+
+def validate_scene_robot(scene: dict, robot: dict) -> None:
+    """Require a single robot matching the controller configuration."""
+    entities = [entity for entity in scene["entities"] if entity.get("robot")]
+    if len(entities) != 1 or entities[0]["id"] != robot["entity_id"]:
+        raise ValueError("Scene must contain exactly one robot matching robot.entity_id")
 
 
 def load_experiment(path):
@@ -161,9 +202,7 @@ def load_experiment(path):
     for key in ("robot", "task"):
         config[key] = read_yaml(path.parent / config[key])
     robot = config["robot"]
-    entities = [e for e in config["scene"]["entities"] if e.get("robot")]
-    if len(entities) != 1 or entities[0]["id"] != robot["entity_id"]:
-        raise ValueError("Scene must contain exactly one robot matching robot.entity_id")
+    validate_scene_robot(config["scene"], robot)
     names = robot["joint_names"]
     if not names or len(set(names)) != len(names):
         raise ValueError("Robot joint_names must be nonempty and unique")

@@ -1,13 +1,17 @@
 """Evaluation plan composition and automatic-reset execution boundaries."""
+from contextlib import contextmanager
+from dataclasses import replace
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 import torch
 
 from rl_go2.evaluation.push_events import sample_event
 from rl_go2.evaluation.conditions import EvaluationCondition, PHYSICAL_SAMPLES, PhysicalSample
-from rl_go2.evaluation.executor import execute_trial
+from rl_go2.evaluation.executor import execute_plan, execute_trial
 from rl_go2.evaluation.motion_tasks import MotionTask
+from rl_go2.evaluation.runner import configure_evaluation_scene, output_records
 from rl_go2.evaluation.task import Trial
 from rl_go2.evaluation.tasks import TASKS
 
@@ -31,6 +35,72 @@ class ResettingEnvironment:
 
 
 class EvaluationTests(unittest.TestCase):
+    def test_legacy_suites_default_to_flat_for_a_step_training_run(self):
+        terrain_plan = TASKS['terrain'].build_plan()
+        step_scene = terrain_plan.scenes['step-6cm']
+        step_scene['sim_options']['dt'] = 0.004
+        robot = next(entity for entity in step_scene['entities'] if entity.get('robot'))
+        robot.update(file='/training/assets/go2.xml', position=[1.3, 0, 0.48])
+        config = {'scene': step_scene, 'robot': {'entity_id': robot['id']}}
+        for name, task in TASKS.items():
+            with self.subTest(task=name):
+                scene = configure_evaluation_scene(config, task.build_plan())['scene']
+                if name == 'terrain':
+                    self.assertIs(scene, step_scene)
+                    continue
+                ground, flat_robot = scene['entities']
+                self.assertEqual(ground['type'], 'plane')
+                self.assertEqual(flat_robot['position'], [0, 0, 0.42])
+                self.assertEqual(flat_robot['file'], '/training/assets/go2.xml')
+                self.assertEqual(scene['sim_options']['dt'], 0.004)
+        self.assertEqual(robot['position'], [1.3, 0, 0.48])
+
+    def test_terrain_plan_resolves_one_box_per_step_and_partitions_outputs(self):
+        task = TASKS['terrain']
+        plan = task.build_plan()
+        self.assertEqual([trial.scene for trial in plan.trials], ['flat', 'step-4cm', 'step-6cm'])
+        self.assertEqual(len({trial.event_key(1) for trial in plan.trials}), 3)
+        self.assertEqual(len({trial.motion for trial in plan.trials}), 1)
+        self.assertEqual([entity['type'] for entity in plan.scenes['flat']['entities']], ['plane', 'mjcf'])
+        for name, height in (('step-4cm', 0.04), ('step-6cm', 0.06)):
+            box, = (entity for entity in plan.scenes[name]['entities'] if entity['type'] == 'box')
+            self.assertTrue(box['fixed'])
+            self.assertAlmostEqual(box['position'][0] - box['size'][0] / 2, 1.0)
+            self.assertAlmostEqual(box['position'][2] - box['size'][2] / 2, 0.0)
+            self.assertAlmostEqual(box['position'][2] + box['size'][2] / 2, height)
+        records = output_records(plan, 'nominal')
+        self.assertEqual([str(path) for path in records], ['flat/nominal', 'step-4cm/nominal', 'step-6cm/nominal'])
+        for case in records.values():
+            trial, = case.trials
+            self.assertEqual(case.scene_config({}, trial)['scene'], plan.scenes[trial.scene])
+
+    def test_execute_plan_reuses_environment_until_scene_changes(self):
+        plan = TASKS['terrain'].build_plan()
+        flat_trial = plan.trials[0]
+        second_motion = replace(flat_trial.motion, name='second_motion')
+        plan = replace(plan, trials=(flat_trial, replace(flat_trial, motion=second_motion), *plan.trials[1:]))
+        opened = []
+        closed = []
+
+        @contextmanager
+        def environment(config, seed, condition, *, viewer):
+            scene = config['scene']
+            opened.append(scene)
+            yield scene
+            closed.append(scene)
+
+        def execute_trial(env, policy, seed, trial, video, *, push_event):
+            self.assertIs(env, plan.scenes[trial.scene])
+            return {'group': trial.group, 'scene': trial.scene, 'condition': trial.condition.name, 'fell': False}
+
+        with patch('rl_go2.evaluation.executor.environment', environment), patch(
+            'rl_go2.evaluation.executor.execute_trial', execute_trial
+        ):
+            report = execute_plan({}, None, [1], plan)
+        self.assertEqual(opened, list(plan.scenes.values()))
+        self.assertEqual(closed, opened)
+        self.assertEqual(report['by_scene']['flat'], {'trials': 2, 'falls': 0})
+
     def test_explicit_conditions_and_motion_lists(self):
         standard = TASKS['standard'].build_plan()
         low = TASKS['low-friction'].build_plan()

@@ -65,6 +65,8 @@ def execute_trial(env: QuadrupedEnv, policy, seed: int, trial: Trial, video,
     result = metrics.finish(env)
     if recovery is not None:
         result['push_recovery'] = recovery.finish(step + 1, result['fell'])
+    if trial.scene is not None:
+        result['scene'] = trial.scene
     return {'seed': seed, 'condition': trial.condition.name, **result}
 
 
@@ -93,6 +95,12 @@ def summarize_plan(config: dict, plan: EvaluationPlan, results: list[dict]) -> d
             counts[status] = counts.get(status, 0) + 1
     if push_outcomes:
         report['push_outcomes'] = push_outcomes
+    if plan.scenes:
+        report['by_scene'] = {name: {'trials': 0, 'falls': 0} for name in plan.scenes}
+        for row in results:
+            counts = report['by_scene'][row['scene']]
+            counts['trials'] += 1
+            counts['falls'] += int(row['fell'])
     if all(trial.continue_after_reset for trial in plan.trials):
         report.update(device=config['device'], num_envs=config['num_envs'])
     return report
@@ -101,18 +109,19 @@ def summarize_plan(config: dict, plan: EvaluationPlan, results: list[dict]) -> d
 def execute_plan(config: dict, policy, seeds: list[int], plan: EvaluationPlan,
                  *, viewer: bool = False, video=None,
                  push_events: dict[tuple, PushEvent] | None = None) -> dict:
-    """Run the plan, sharing an environment across consecutive trials of a condition."""
+    """Run the plan, sharing an environment while scene and condition stay the same."""
     results = []
     events = push_events or {}
     with torch.inference_mode(), ExitStack() as resources:
         for seed in seeds:
-            active_condition = None
+            active_environment = None
             for trial in plan.trials:
-                if trial.condition is not active_condition:
+                environment_key = (trial.scene, trial.condition.name)
+                if environment_key != active_environment:
                     resources.close()
-                    env = resources.enter_context(environment(config, seed, trial.condition, viewer=viewer))
-                    active_condition = trial.condition
-                key = (seed, trial.condition.name, trial.name)
-                event = events[key] if trial.condition.point_push is not None else None
+                    trial_config = plan.scene_config(config, trial)
+                    env = resources.enter_context(environment(trial_config, seed, trial.condition, viewer=viewer))
+                    active_environment = environment_key
+                event = events[trial.event_key(seed)] if trial.condition.point_push is not None else None
                 results.append(execute_trial(env, policy, seed, trial, video, push_event=event))
     return summarize_plan(config, plan, results)

@@ -73,9 +73,13 @@ def build_push_events(config: dict, plan: 'EvaluationPlan', seeds: list[int]) ->
     trials = [trial for trial in plan.trials if trial.condition.point_push is not None]
     if not trials:
         return {}
-    geometry = Go2PushGeometry(config, FOOT_NAMES, torch.device('cpu'))
-    dt = config['scene']['sim_options']['dt'] * config['robot']['control_decimation']
-    return {
-        (seed, trial.condition.name, trial.name): sample_event(config, geometry, dt, trial, seed)
-        for seed in seeds for trial in trials
-    }
+    geometries = {}
+    events = {}
+    for trial in trials:
+        trial_config = plan.scene_config(config, trial)
+        if trial.scene not in geometries:
+            geometries[trial.scene] = Go2PushGeometry(trial_config, FOOT_NAMES, torch.device('cpu'))
+        dt = trial_config['scene']['sim_options']['dt'] * trial_config['robot']['control_decimation']
+        for seed in seeds:
+            events[trial.event_key(seed)] = sample_event(trial_config, geometries[trial.scene], dt, trial, seed)
+    return events

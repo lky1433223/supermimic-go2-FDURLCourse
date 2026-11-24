@@ -45,12 +45,16 @@ class MujocoBackend:
         self.data = mujoco.MjData(self.model)
         if foot_friction_ranges(config) is not None:
             self.foot_ids = [self.model.geom(name).id for name in FOOT_NAMES]
-            planes = np.flatnonzero(self.model.geom_type == mujoco.mjtGeom.mjGEOM_PLANE)
-            if (len(planes) != 1 or np.any(self.model.geom_priority[self.foot_ids] <= self.model.geom_priority[planes[0]])
+            surfaces = [self.model.geom(entity["id"]).id for entity in config["scene"]["entities"]
+                        if not entity.get("robot")]
+            has_explicit_pair = any(
+                (a in surfaces and b in self.foot_ids) or (b in surfaces and a in self.foot_ids)
+                for a, b in zip(self.model.pair_geom1, self.model.pair_geom2)
+            )
+            if (not surfaces or np.any(self.model.geom_priority[self.foot_ids, None] <= self.model.geom_priority[surfaces])
                     or np.any(self.model.geom_condim[self.foot_ids] != 6)
-                    or any(planes[0] in (a, b) and (a in self.foot_ids or b in self.foot_ids)
-                           for a, b in zip(self.model.pair_geom1, self.model.pair_geom2))):
-                raise ValueError("Foot friction requires one plane and implicit contacts with higher-priority condim=6 feet")
+                    or has_explicit_pair):
+                raise ValueError("Foot friction requires implicit surface contacts with higher-priority condim=6 feet")
         names = config["robot"]["joint_names"]
         joints = [self.model.joint(name).id for name in names]
         self.q_indices = self.model.jnt_qposadr[joints]

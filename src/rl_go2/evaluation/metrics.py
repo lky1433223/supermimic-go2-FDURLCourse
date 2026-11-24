@@ -69,6 +69,8 @@ class TrialMetrics:
         self.trial = trial
 
     def label(self, seed):
+        if self.trial.scene is not None:
+            return f'Seed {seed} | {self.trial.scene} | {self.trial.condition.name} | {self.trial.name}'
         return f'Seed {seed} | {self.trial.condition.name} | {self.trial.name}'
 
 

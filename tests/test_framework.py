@@ -13,6 +13,7 @@ from rl_go2.backends import LinkPointForces, make_backend
 from rl_go2.config import load_experiment, load_scene
 from rl_go2.control import JointPositionControl
 from rl_go2.env import QuadrupedEnv
+from rl_go2.evaluation.conditions import NOMINAL_SAMPLE, NOMINAL_SLIDING
 from rl_go2.state import RobotState, rotate_inverse
 from rl_go2.tasks import TASK_TYPES
 
@@ -83,6 +84,56 @@ class ProbeTask:
 class FrameworkTests(unittest.TestCase):
     def setUp(self):
         self.config = load_experiment(ROOT / "configs/experiments/flat_ppo.yaml")
+
+    def step_contact_config(self, backend):
+        scene = load_scene(ROOT / 'configs/scenes/single_step.yaml')
+        robot = next(entity for entity in scene['entities'] if entity.get('robot'))
+        robot['position'] = [1.3, 0.0, 0.46]
+        config = {**self.config, 'scene': scene, 'backend': backend, 'device': 'cpu', 'num_envs': 1}
+        return NOMINAL_SAMPLE.condition('step-contact', NOMINAL_SLIDING, friction_multiplier=0.5).apply(config)
+
+    def test_step_height_override_rejects_invalid_values(self):
+        path = ROOT / 'configs/scenes/single_step.yaml'
+        for height in (0, -0.01, float('inf'), True):
+            with self.subTest(height=height), self.assertRaisesRegex(ValueError, 'Step step'):
+                load_scene(path, entity_overrides={'step': {'height_m': height}})
+        with self.assertRaisesRegex(ValueError, 'named step entities'):
+            load_scene(path, entity_overrides={'ground': {'height_m': 0.05}})
+
+    def test_mujoco_step_uses_randomized_foot_contact_parameters(self):
+        env = QuadrupedEnv(self.step_contact_config('mujoco'))
+        try:
+            backend = env.backend
+            step_id = backend.model.geom('step').id
+            for _ in range(12):
+                env.step(torch.zeros(1, 12))
+            contacts = [contact for contact in backend.data.contact
+                        if step_id in contact.geom and any(foot in contact.geom for foot in backend.foot_ids)]
+            self.assertTrue(contacts)
+            for contact in contacts:
+                self.assertEqual(contact.dim, 6)
+                torch.testing.assert_close(torch.tensor(contact.friction.tolist()),
+                                           torch.tensor([0.4, 0.4, 0.01, 0.005, 0.005]))
+        finally:
+            env.close()
+
+    @unittest.skipUnless(os.environ.get('RL_GO2_TEST_GENESIS') == '1', 'opt-in Genesis CPU kernel compilation')
+    def test_genesis_step_is_in_randomized_foot_contact_surfaces(self):
+        env = QuadrupedEnv(self.step_contact_config('genesis'))
+        try:
+            backend = env.backend
+            *foot_ids, ground_id, step_id = backend.friction_geom_ids
+            ratios = backend.scene.rigid_solver.get_geoms_friction_ratio([ground_id, step_id])
+            torch.testing.assert_close(ratios, torch.full_like(ratios, 0.5))
+            for _ in range(12):
+                env.step(torch.zeros(1, 12))
+            contacts = backend.robot.get_contacts(exclude_self_contact=True)
+            foot_ids = torch.tensor(foot_ids, device=env.device)
+            a, b = contacts['geom_a'], contacts['geom_b']
+            touching_step = ((a == step_id) & torch.isin(b, foot_ids)) | ((b == step_id) & torch.isin(a, foot_ids))
+            self.assertTrue((touching_step & contacts['valid_mask']).any())
+        finally:
+            env.close()
 
     def test_coordinate_rotation_and_torque_clipping(self):
         quat = torch.tensor([[2**-0.5, 0., 0., 2**-0.5]])
