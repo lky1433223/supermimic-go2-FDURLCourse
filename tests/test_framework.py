@@ -1,5 +1,6 @@
 """Control, reset boundaries and policy export checks; no training."""
 from copy import deepcopy
+import math
 from pathlib import Path
 import os
 import json
@@ -97,8 +98,60 @@ class FrameworkTests(unittest.TestCase):
         for height in (0, -0.01, float('inf'), True):
             with self.subTest(height=height), self.assertRaisesRegex(ValueError, 'Step step'):
                 load_scene(path, entity_overrides={'step': {'height_m': height}})
-        with self.assertRaisesRegex(ValueError, 'named step entities'):
+        with self.assertRaisesRegex(ValueError, 'named step or ramp entities'):
             load_scene(path, entity_overrides={'ground': {'height_m': 0.05}})
+
+    def test_ramp_slope_override_rejects_invalid_values(self):
+        for slope in (0, -5, 90, float('nan')):
+            with self.subTest(slope=slope), self.assertRaisesRegex(ValueError, 'Ramp ramp'):
+                load_scene(ROOT / 'configs/scenes/ramp.yaml', entity_overrides={'ramp': {'slope_deg': slope}})
+
+    def test_mujoco_ramp_surface_meets_ground_and_platform(self):
+        import mujoco
+        import numpy as np
+
+        for slope in (5, 10):
+            scene = load_scene(ROOT / 'configs/scenes/ramp.yaml', entity_overrides={'ramp': {'slope_deg': slope}})
+            config = {**self.config, 'scene': scene, 'backend': 'mujoco', 'device': 'cpu', 'num_envs': 1}
+            config = NOMINAL_SAMPLE.condition('ramp-contact', NOMINAL_SLIDING).apply(config)
+            env = QuadrupedEnv(config)
+            try:
+                rise = 0.8 * math.tan(math.radians(slope))
+                surface_samples = (
+                    (0.99, 0), (1.01, rise / 80), (1.4, rise / 2), (1.799, rise * 0.799 / 0.8),
+                    (1.801, rise), (2.399, rise), (2.401, rise * 0.799 / 0.8),
+                    (2.8, rise / 2), (3.19, rise / 80), (3.21, 0),
+                )
+                for x, height in surface_samples:
+                    with self.subTest(slope=slope, x=x):
+                        distance = mujoco.mj_ray(
+                            env.backend.model, env.backend.data, np.array([x, 0.0, 1.0]),
+                            np.array([0.0, 0.0, -1.0]), None, True, -1, np.zeros(1, dtype=np.int32),
+                        )
+                        self.assertAlmostEqual(1 - distance, height, places=7)
+            finally:
+                env.close()
+
+    @unittest.skipUnless(os.environ.get('RL_GO2_TEST_GENESIS') == '1', 'opt-in Genesis CPU kernel compilation')
+    def test_genesis_foot_contacts_the_ramp_incline(self):
+        scene = load_scene(ROOT / 'configs/scenes/ramp.yaml')
+        robot = next(entity for entity in scene['entities'] if entity.get('robot'))
+        robot['position'] = [1.4, 0, 0.42 + 0.4 * math.tan(math.radians(5))]
+        config = {**self.config, 'scene': scene, 'backend': 'genesis', 'device': 'cpu', 'num_envs': 1}
+        config = NOMINAL_SAMPLE.condition('ramp-contact', NOMINAL_SLIDING).apply(config)
+        env = QuadrupedEnv(config)
+        try:
+            backend = env.backend
+            *foot_ids, _ground_id, uphill_id, _deck_id, _downhill_id = backend.friction_geom_ids
+            feet = torch.tensor(foot_ids, device=env.device)
+            for _ in range(12):
+                env.step(torch.zeros(1, 12))
+            contacts = backend.robot.get_contacts(exclude_self_contact=True)
+            a, b = contacts['geom_a'], contacts['geom_b']
+            touching_ramp = ((a == uphill_id) & torch.isin(b, feet)) | ((b == uphill_id) & torch.isin(a, feet))
+            self.assertTrue((touching_ramp & contacts['valid_mask']).any())
+        finally:
+            env.close()
 
     def test_mujoco_step_uses_randomized_foot_contact_parameters(self):
         env = QuadrupedEnv(self.step_contact_config('mujoco'))

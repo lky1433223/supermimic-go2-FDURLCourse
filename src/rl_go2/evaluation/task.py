@@ -12,7 +12,7 @@ from .motion_tasks import MotionTask
 
 @dataclass(frozen=True)
 class SceneSpec:
-    """A named scene file with optional overrides for its step entities."""
+    """A named scene file with optional overrides for its terrain entities."""
 
     name: str
     file: Path

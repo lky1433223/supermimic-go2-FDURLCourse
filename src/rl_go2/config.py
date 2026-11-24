@@ -6,6 +6,7 @@ from pathlib import Path
 
 import yaml
 
+from rl_go2.scene_geometry import resolve_terrain_entities
 from rl_go2.tasks import validate_task_name
 
 FLAT_SCENE_PATH = Path(__file__).resolve().parents[2] / "configs" / "scenes" / "flat.yaml"
@@ -104,31 +105,8 @@ def read_yaml(path):
     return data
 
 
-STEP_DIMENSIONS = {"length_m", "width_m", "height_m"}
-STEP_POSITION = {"start_x_m", "center_y_m", "base_z_m"}
-
-
-def step_box(entity: dict, overrides: Mapping[str, float]) -> dict:
-    """Resolve an axis-aligned step to a fixed box with sizes in metres."""
-    entity_id = entity["id"]
-    fields = STEP_DIMENSIONS | STEP_POSITION
-    if entity.keys() - (fields | {"id", "type", "friction"}) or overrides.keys() - fields:
-        raise ValueError(f"Unsupported step fields or overrides on {entity_id}")
-    values = {**entity, **overrides}
-    if any(type(values.get(key)) not in (int, float) or not math.isfinite(values[key]) for key in fields):
-        raise ValueError(f"Step {entity_id} must declare finite dimensions and position")
-    length, width, height = (values[key] for key in ("length_m", "width_m", "height_m"))
-    if min(length, width, height) <= 0:
-        raise ValueError(f"Step {entity_id} dimensions must be positive")
-    return {
-        "id": entity_id, "type": "box", "fixed": True,
-        "position": [values["start_x_m"] + length / 2, values["center_y_m"], values["base_z_m"] + height / 2],
-        "size": [length, width, height], "friction": values.get("friction", 0.8),
-    }
-
-
 def load_scene(path: str | Path, *, entity_overrides: Mapping[str, Mapping[str, float]] | None = None) -> dict:
-    """Load backend-ready geometry, optionally overriding named step parameters."""
+    """Load backend-ready geometry, optionally overriding named terrain parameters."""
     path = Path(path).resolve()
     doc = read_yaml(path)
     if doc.get("schema") != "rl-go2.scene/v1":
@@ -145,15 +123,12 @@ def load_scene(path: str | Path, *, entity_overrides: Mapping[str, Mapping[str, 
     if len(sim["gravity"]) != 3 or not all(math.isfinite(x) for x in sim["gravity"]):
         raise ValueError("gravity must be three finite values")
     seen = set()
-    overrides = dict(entity_overrides or {})
-    for index, entity in enumerate(scene["entities"]):
+    scene["entities"] = resolve_terrain_entities(scene["entities"], entity_overrides or {})
+    for entity in scene["entities"]:
         eid = entity["id"]
         if eid in seen:
             raise ValueError(f"Duplicate entity id: {eid}")
         seen.add(eid)
-        if entity["type"] == "step":
-            entity = step_box(entity, overrides.pop(eid, {}))
-            scene["entities"][index] = entity
         kind = entity["type"]
         if kind not in {"plane", "box", "mjcf"}:
             raise NotImplementedError(f"Scene entity type not implemented: {kind}")
@@ -183,8 +158,6 @@ def load_scene(path: str | Path, *, entity_overrides: Mapping[str, Mapping[str, 
             raise ValueError(f"friction must be finite and nonnegative: {eid}")
         if "file" in entity:
             entity["file"] = str((path.parent / entity["file"]).resolve())
-    if overrides:
-        raise ValueError(f"Overrides require named step entities: {sorted(overrides)}")
     return scene
 
 

@@ -1,0 +1,30 @@
+schema: rl-go2.scene/v1
+# SI units, slope in degrees, Z-up, quaternion order wxyz.
+scene:
+  sim_options:
+    dt: 0.005
+    gravity: [0, 0, -9.81]
+  entities:
+    - id: ground
+      type: plane
+      position: [0, 0, 0]
+      fixed: true
+      friction: 0.8
+    - id: ramp
+      type: ramp
+      start_x_m: 1.0
+      center_y_m: 0.0
+      base_z_m: 0.0
+      run_m: 0.80
+      width_m: 1.20
+      platform_length_m: 0.60
+      thickness_m: 0.05
+      slope_deg: 5.0
+      friction: 0.8
+    - id: go2
+      type: mjcf
+      robot: true
+      file: ../../assets/robots/go2/go2.xml
+      position: [0, 0, 0.42]
+      rotation: [1, 0, 0, 0]
+  sensors: []

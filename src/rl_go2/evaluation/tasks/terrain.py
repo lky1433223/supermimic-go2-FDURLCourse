@@ -8,19 +8,23 @@ from ..task import EvaluationGroup, EvaluationTask, SceneSpec
 
 
 STEP_SCENE = FLAT_SCENE_PATH.with_name('single_step.yaml')
+RAMP_SCENE = FLAT_SCENE_PATH.with_name('ramp.yaml')
 
 
 class TerrainTask(EvaluationTask):
     TASK = 'terrain'
-    TASK_DESCRIPTION = 'Compare straight walking on flat ground and 4 cm and 6 cm single steps.'
+    TASK_DESCRIPTION = 'Compare straight walking on flat ground, single steps, and ramps.'
 
     evaluation_groups = (
         EvaluationGroup(
             name='crossing',
             scenes=(
                 SceneSpec('flat', FLAT_SCENE_PATH),
+                SceneSpec('step-2cm', STEP_SCENE, {'step': {'height_m': 0.02}}),
                 SceneSpec('step-4cm', STEP_SCENE, {'step': {'height_m': 0.04}}),
                 SceneSpec('step-6cm', STEP_SCENE, {'step': {'height_m': 0.06}}),
+                SceneSpec('ramp-5deg', RAMP_SCENE, {'ramp': {'slope_deg': 5.0}}),
+                SceneSpec('ramp-10deg', RAMP_SCENE, {'ramp': {'slope_deg': 10.0}}),
             ),
             conditions=(NOMINAL_SAMPLE.condition('nominal', NOMINAL_SLIDING),),
             motions=(MotionTask('forward_0.5', 0.5, duration_seconds=8),),

@@ -58,18 +58,19 @@ class EvaluationTests(unittest.TestCase):
     def test_terrain_plan_resolves_one_box_per_step_and_partitions_outputs(self):
         task = TASKS['terrain']
         plan = task.build_plan()
-        self.assertEqual([trial.scene for trial in plan.trials], ['flat', 'step-4cm', 'step-6cm'])
-        self.assertEqual(len({trial.event_key(1) for trial in plan.trials}), 3)
+        scenes = ['flat', 'step-2cm', 'step-4cm', 'step-6cm', 'ramp-5deg', 'ramp-10deg']
+        self.assertEqual([trial.scene for trial in plan.trials], scenes)
+        self.assertEqual(len({trial.event_key(1) for trial in plan.trials}), len(scenes))
         self.assertEqual(len({trial.motion for trial in plan.trials}), 1)
         self.assertEqual([entity['type'] for entity in plan.scenes['flat']['entities']], ['plane', 'mjcf'])
-        for name, height in (('step-4cm', 0.04), ('step-6cm', 0.06)):
+        for name, height in (('step-2cm', 0.02), ('step-4cm', 0.04), ('step-6cm', 0.06)):
             box, = (entity for entity in plan.scenes[name]['entities'] if entity['type'] == 'box')
             self.assertTrue(box['fixed'])
             self.assertAlmostEqual(box['position'][0] - box['size'][0] / 2, 1.0)
             self.assertAlmostEqual(box['position'][2] - box['size'][2] / 2, 0.0)
             self.assertAlmostEqual(box['position'][2] + box['size'][2] / 2, height)
         records = output_records(plan, 'nominal')
-        self.assertEqual([str(path) for path in records], ['flat/nominal', 'step-4cm/nominal', 'step-6cm/nominal'])
+        self.assertEqual([str(path) for path in records], [f'{name}/nominal' for name in scenes])
         for case in records.values():
             trial, = case.trials
             self.assertEqual(case.scene_config({}, trial)['scene'], plan.scenes[trial.scene])

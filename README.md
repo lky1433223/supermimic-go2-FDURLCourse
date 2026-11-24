@@ -116,14 +116,16 @@ Z 轴 ±1 cm，以及三轴同时偏移 (+3, +3, +1) cm。每个种子跑 84 项
 
 ### 地形场景对照
 
-`python scripts/evaluate.py --task terrain --run-dir <训练目录>` 用同一策略和标称物理工况在平地、4 cm 和 6 cm 台阶上执行 8 秒直行。
+`python scripts/evaluate.py --task terrain --run-dir <训练目录>` 用同一策略和标称物理工况在平地、2/4/6 cm 台阶和 5°/10° 缓坡上执行 8 秒直行。
 可加 `--backend genesis` 用同一套件检查 Genesis。`eval-config.json` 的 `scenes` 记录解析后的碰撞几何和机器人出生位姿，
 `summary.json` 按场景汇总试次与摔倒次数。各场景的报告和可选录像保存在 `<场景>/<工况>/`。
 
 `configs/scenes/flat.yaml` 使用单个平面，`configs/scenes/single_step.yaml` 在平面上增加一个固定箱体。
 台阶的 `height_m` 按米配置。调整高度时，箱体前沿和底面位置固定。
-训练配置可用 `scene: ../scenes/single_step.yaml` 选择该场景。评测套件在 `EvaluationGroup` 中选择场景、工况与动作，
-可通过 `SceneSpec.entity_overrides` 为同一个台阶文件指定多个高度。当前地形套件使用平地步行任务的奖励和终止规则。
+`configs/scenes/ramp.yaml` 包含上坡、平台和下坡。`slope_deg` 控制坡度，`run_m` 是每段坡的水平长度，平台高度由这两个参数决定。
+训练配置可用 `scene: ../scenes/single_step.yaml` 或 `scene: ../scenes/ramp.yaml` 选择地形。
+评测套件在 `EvaluationGroup` 中选择场景、工况与动作，可通过 `SceneSpec.entity_overrides` 复用地形文件并指定多个高度或坡度。
+当前地形套件使用平地步行任务的奖励和终止规则。
 
 训练启动时会打印绝对输出路径。历史 `runs/` 及当前已有产物保持原位，仍被忽略，不自动迁移。
 
