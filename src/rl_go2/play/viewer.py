@@ -16,6 +16,10 @@ class PlayViewer(Protocol):
         """Release window-owned resources before the simulation closes."""
         ...
 
+    def center_camera(self, position: tuple[float, float, float]) -> None:
+        """Move the view to the new spawn position in world meters."""
+        ...
+
     def release_forces(self) -> None:
         """Release mouse grabs before pause, reset or automatic recovery."""
         ...

@@ -30,6 +30,8 @@ class MujocoPlayViewer:
             raise RuntimeError('play.py requires plain python on macOS. Run: uv run --extra train python scripts/play.py ...')
         self.backend = backend
         self.model = playback_model(backend.model)
+        # Clipping distances scale with model extent, which grows with patch separation.
+        self.model.vis.map.znear = min(self.model.vis.map.znear, 0.03 / self.model.stat.extent)
         self.data = backend.data
         self.controls = controls
         self.last_cursor = (0.0, 0.0)
@@ -69,7 +71,8 @@ class MujocoPlayViewer:
         mapping = {glfw.KEY_W: 'w', glfw.KEY_A: 'a', glfw.KEY_S: 's', glfw.KEY_D: 'd',
                    glfw.KEY_UP: 'up', glfw.KEY_DOWN: 'down', glfw.KEY_LEFT: 'left',
                    glfw.KEY_RIGHT: 'right', glfw.KEY_SPACE: 'stop', glfw.KEY_P: 'pause',
-                   glfw.KEY_R: 'reset', glfw.KEY_ESCAPE: 'quit', glfw.KEY_F1: 'details'}
+                   glfw.KEY_R: 'reset', glfw.KEY_ESCAPE: 'quit', glfw.KEY_F1: 'details',
+                   glfw.KEY_N: 'next_terrain'}
         if key in mapping:
             if action == glfw.PRESS and mapping[key] in {'pause', 'reset', 'stop', 'quit'}:
                 self.release_forces()
@@ -79,6 +82,10 @@ class MujocoPlayViewer:
         if not focused:
             self.release_forces()
             self.controls.clear_keys()
+
+    def center_camera(self, position: tuple[float, float, float]) -> None:
+        """Center the free camera on the terrain spawn in world meters."""
+        self.camera.lookat[:] = position
 
     def release_forces(self) -> None:
         """Drop the selected body so no perturbation is applied on the next step."""

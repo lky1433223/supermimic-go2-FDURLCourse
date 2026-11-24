@@ -13,6 +13,50 @@ from rl_go2.play.runner import load_inputs
 
 
 class PlayTests(unittest.TestCase):
+    def test_next_terrain_key_is_consumed_once(self):
+        controls = Controls(0.8, 0.5)
+        controls.key_event('next_terrain', True)
+        self.assertTrue(controls.consume_terrain_switch())
+        controls.key_event('next_terrain', True, repeat=True)
+        self.assertFalse(controls.consume_terrain_switch())
+
+    def test_playback_terrains_keep_selected_spawn_after_reset(self):
+        from unittest.mock import Mock
+
+        import torch
+
+        from rl_go2.config import load_experiment
+        from rl_go2.env import QuadrupedEnv
+        from rl_go2.play.runner import select_playback_terrain
+        from rl_go2.play.terrain import playback_scene, terrain_order
+
+        repo = Path(__file__).resolve().parents[1]
+        for experiment in ('flat_supermimic', 'terrain_supermimic_push'):
+            with self.subTest(experiment=experiment):
+                config = load_experiment(repo / 'configs/experiments' / f'{experiment}.yaml')
+                config.update(backend='mujoco', device='cpu', num_envs=1)
+                scene = playback_scene(config['scene'], config['robot'], config['seed'], repo)
+                config['scene'] = scene
+                patches = scene['terrain_patches']
+                order = terrain_order(patches)
+                self.assertCountEqual(order, range(len(patches)))
+                self.assertEqual([patches[index]['type'] for index in order[:4]],
+                                 ['flat', 'step', 'ramp', 'rough_ground'])
+                env = QuadrupedEnv(config)
+                viewer = Mock()
+                controls = Controls(0.8, 0.5)
+                try:
+                    for cursor, index in enumerate(order[:4]):
+                        select_playback_terrain(env, viewer, controls, order, cursor)
+                        expected = torch.tensor([patches[index]['position']])
+                        torch.testing.assert_close(env.state.position, expected)
+                        viewer.center_camera.assert_called_with(tuple(patches[index]['position']))
+                        self.assertEqual(controls.status()['terrain'], patches[index]['name'])
+                        env.reset()
+                        torch.testing.assert_close(env.state.position, expected)
+                finally:
+                    env.close()
+
     def test_combination_release_and_speed_bounds(self):
         controls = Controls(0.8, 0.5)
         controls.key_event('w', True)

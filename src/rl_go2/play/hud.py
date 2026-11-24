@@ -44,6 +44,7 @@ def layout_hud(status: dict) -> Panel:
         Text(292, 35, 'PAUSED' if paused else 'RUNNING',
              (255, 204, 112) if paused else (121, 224, 162)),
         Text(16, 51, f"{'MuJoCo' if backend == 'mujoco' else 'Genesis'}  /  1x target", MUTED),
+        Text(166, 51, f"{status.get('terrain', '')}  {status.get('terrain_progress', '')}  [N]", CYAN),
         Text(16, 77, 'BODY VELOCITY', MUTED),
         Text(166, 77, 'TARGET', MUTED),
         Text(268, 77, 'ACTUAL', CYAN),

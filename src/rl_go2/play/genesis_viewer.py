@@ -33,7 +33,8 @@ class PlaybackPlugin(ViewerPlugin):
         self.held: set[int] = set()
         self.mapping = {key.W: 'w', key.A: 'a', key.S: 's', key.D: 'd',
                         key.UP: 'up', key.DOWN: 'down', key.LEFT: 'left', key.RIGHT: 'right',
-                        key.SPACE: 'stop', key.P: 'pause', key.R: 'reset', key.ESCAPE: 'quit', key.F1: 'details'}
+                        key.SPACE: 'stop', key.P: 'pause', key.R: 'reset', key.ESCAPE: 'quit', key.F1: 'details',
+                        key.N: 'next_terrain'}
 
     def on_key_press(self, symbol: int, modifiers: int) -> bool | None:
         if symbol not in self.mapping:
@@ -112,6 +113,12 @@ class GenesisPlayViewer:
             self.viewer.remove_plugin(self.force_drag)
             self.viewer.remove_plugin(self.plugin)
         self.plugin.on_close()
+
+    def center_camera(self, position: tuple[float, float, float]) -> None:
+        """Center on the spawn in world meters while preserving the orbit angle."""
+        # Genesis exposes lookat one unit along the viewing axis.
+        offset = 3.5 * (self.viewer.camera_pos - self.viewer.camera_lookat)
+        self.viewer.set_camera_pose(pos=position + offset, lookat=position)
 
     def release_forces(self) -> None:
         """Release the spring grab after a reset or pause."""

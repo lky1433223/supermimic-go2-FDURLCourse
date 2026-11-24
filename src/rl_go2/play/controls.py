@@ -15,6 +15,7 @@ class Controls:
     paused: bool = False
     stopped: bool = False
     reset_requested: bool = False
+    terrain_requested: bool = False
     keys: set[str] = field(default_factory=set)
     telemetry: dict = field(default_factory=dict)
     lock: Lock = field(default_factory=Lock)
@@ -47,6 +48,8 @@ class Controls:
             elif key == 'pause':
                 self.paused = not self.paused
                 self.keys.clear()
+            elif key == 'next_terrain':
+                self.terrain_requested = True
             elif key == 'reset':
                 self.reset_requested = True
                 self.keys.clear()
@@ -69,6 +72,13 @@ class Controls:
             reset = self.reset_requested
             self.reset_requested = False
             return command, self.paused, self.stopped, reset
+
+    def consume_terrain_switch(self) -> bool:
+        """Return and clear the next-terrain request from the native viewer."""
+        with self.lock:
+            requested = self.terrain_requested
+            self.terrain_requested = False
+            return requested
 
     def status(self) -> dict:
         """Return a consistent HUD snapshot."""

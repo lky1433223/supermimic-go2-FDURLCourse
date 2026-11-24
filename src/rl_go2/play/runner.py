@@ -11,6 +11,7 @@ from rl_go2.evaluation.conditions import NOMINAL_SAMPLE, NOMINAL_SLIDING
 from rl_go2.evaluation.runner import load_policy
 from rl_go2.state import rotate_inverse
 from .controls import Controls
+from .terrain import playback_scene, terrain_order
 from .viewer import PlayViewer, create_viewer
 
 
@@ -34,6 +35,7 @@ def load_inputs(args: argparse.Namespace) -> tuple[dict, torch.nn.Module, Path, 
         if not local.is_file():
             raise FileNotFoundError(f'Scene asset missing: {original} (local candidate: {local})')
         entity['file'] = str(local)
+    config['scene'] = playback_scene(config['scene'], config['robot'], args.seed, repo)
     config.update(backend=args.backend, device=args.device, num_envs=1,
                   curriculum={'name': 'none'}, seed=args.seed)
     config['viewer_options'] = {'enable_help_text': False, 'enable_default_keybinds': False}
@@ -55,10 +57,25 @@ def load_inputs(args: argparse.Namespace) -> tuple[dict, torch.nn.Module, Path, 
     return config, policy, path, iteration
 
 
+def select_playback_terrain(env: QuadrupedEnv, viewer: PlayViewer, controls: Controls,
+                            order: list[int], cursor: int) -> None:
+    """Release any grab, reset onto the selected terrain, and update the view."""
+    index = order[cursor]
+    patch = env.terrain_patches[index]
+    viewer.release_forces()
+    env.select_terrain(index)
+    viewer.center_camera(tuple(patch['position']))
+    controls.publish(terrain=patch['name'], terrain_progress=f'{cursor + 1}/{len(order)}',
+                     command=[0.0, 0.0], actual=[0.0, 0.0])
+
+
 def run_loop(env: QuadrupedEnv, policy: torch.nn.Module, controls: Controls,
              viewer: PlayViewer, steps: int | None) -> None:
     """Advance at most real-time and smooth body-frame velocity changes over 0.15 s."""
     command = torch.zeros(1, 3, device=env.device)
+    order = terrain_order(env.terrain_patches)
+    cursor = 0
+    select_playback_terrain(env, viewer, controls, order, cursor)
     count = 0
     deadline = time.monotonic()
     with torch.no_grad():
@@ -68,9 +85,14 @@ def run_loop(env: QuadrupedEnv, policy: torch.nn.Module, controls: Controls,
             target, paused, stopped, reset = controls.sample()
             if stopped:
                 break
-            if reset:
-                viewer.release_forces()
-                env.reset()
+            switch = controls.consume_terrain_switch()
+            if switch or reset:
+                if switch:
+                    cursor = (cursor + 1) % len(order)
+                    select_playback_terrain(env, viewer, controls, order, cursor)
+                else:
+                    viewer.release_forces()
+                    env.reset()
                 command.zero_()
                 controls.clear_keys()
                 target = [0.0, 0.0, 0.0]

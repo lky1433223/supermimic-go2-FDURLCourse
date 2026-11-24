@@ -49,6 +49,7 @@ class QuadrupedEnv:
         self.record_transitions = record_transitions
         patches = config['scene'].get('terrain_patches', [])
         self.terrain_patches = patches
+        self._fixed_terrain_index: int | None = None
         if patches:
             self.terrain_generator = torch.Generator().manual_seed(config['seed'] ^ 0x53504157)
             self.terrain_weights = torch.tensor([patch['weight'] for patch in patches])
@@ -139,14 +140,24 @@ class QuadrupedEnv:
             context["base_com_offset_m"] = self.base_com_offset_m
         return context
 
+    def select_terrain(self, index: int) -> None:
+        """Reset on the selected patch and keep subsequent resets on that patch."""
+        if not 0 <= index < len(self.terrain_patches):
+            raise ValueError(f'Terrain patch index out of range: {index}')
+        self._fixed_terrain_index = index
+        self.reset()
+
     def reset(self, env_ids=None, metrics=None):
         if env_ids is None:
             env_ids = torch.arange(self.num_envs, device=self.device)
         updates = self.curriculum.on_reset(env_ids, environment_steps=self.environment_steps, metrics=metrics or {})
         self.backend.reset(env_ids)
         if self.terrain_patches and len(env_ids):
-            selected = torch.multinomial(self.terrain_weights, len(env_ids), replacement=True,
-                                         generator=self.terrain_generator).to(self.device)
+            if self._fixed_terrain_index is None:
+                selected = torch.multinomial(self.terrain_weights, len(env_ids), replacement=True,
+                                             generator=self.terrain_generator).to(self.device)
+            else:
+                selected = torch.full_like(env_ids, self._fixed_terrain_index)
             self.terrain_ids[env_ids] = selected
             self.backend.set_base_pose(env_ids, self.terrain_positions[selected], self.terrain_rotations[selected])
         if self.friction_switch_steps is not None:
