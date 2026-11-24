@@ -96,5 +96,7 @@ def hud_text(status: dict) -> str:
         f"Training vx / vy / yaw: {status.get('training_ranges', [])}",
         'W/S forward/back | A/D turn | Arrows adjust speed/turn',
         'Space stop | P pause | R reset | Esc exit',
-        'Mouse drag orbit | Right drag pan | Scroll zoom',
+        'Left drag robot: force | Drag empty area: orbit | Right drag: pan',
+        f"Mouse grab: {status.get('mouse_body', 'none')} | Force {status.get('mouse_force_n', 0.0):.1f} N"
+        if status.get('backend') == 'mujoco' else 'Mouse grab: spring force',
     ])

@@ -8,6 +8,7 @@ import glfw
 import mujoco
 import numpy as np
 
+from rl_go2.backends.mujoco import MujocoBackend
 from .controls import Controls, hud_text
 
 
@@ -26,17 +27,21 @@ def playback_model(model: mujoco.MjModel) -> mujoco.MjModel:
 class MujocoPlayViewer:
     """Own a GLFW window and MuJoCo render resources on the calling thread."""
 
-    def __init__(self, model: mujoco.MjModel, data: mujoco.MjData, controls: Controls):
+    def __init__(self, backend: MujocoBackend, controls: Controls) -> None:
         if sys.platform == 'darwin' and not ctypes.CDLL(None).pthread_main_np():
             raise RuntimeError('play.py requires plain python on macOS. Run: uv run --extra train python scripts/play.py ...')
-        self.model = playback_model(model)
-        self.data = data
+        self.backend = backend
+        self.model = playback_model(backend.model)
+        self.data = backend.data
         self.controls = controls
         self.last_cursor = (0.0, 0.0)
         self.scene = mujoco.MjvScene(self.model, maxgeom=10000)
         self.camera = mujoco.MjvCamera()
         self.options = mujoco.MjvOption()
-        mujoco.mjv_defaultFreeCamera(model, self.camera)
+        self.perturb = mujoco.MjvPerturb()
+        self.options.flags[mujoco.mjtVisFlag.mjVIS_PERTFORCE] = True
+        self.options.flags[mujoco.mjtVisFlag.mjVIS_PERTOBJ] = True
+        mujoco.mjv_defaultFreeCamera(self.model, self.camera)
         self.camera.distance = 3.0
         self.camera.azimuth = 135
         self.camera.elevation = -25
@@ -54,10 +59,12 @@ class MujocoPlayViewer:
             glfw.set_window_focus_callback(self.window, self._on_focus)
             glfw.set_cursor_pos_callback(self.window, self._on_cursor)
             glfw.set_scroll_callback(self.window, self._on_scroll)
+            glfw.set_mouse_button_callback(self.window, self._on_mouse_button)
         except Exception:
             glfw.destroy_window(self.window)
             glfw.terminate()
             raise
+        backend.set_interactive_force_callback(self.apply_forces)
 
     def _on_key(self, window, key: int, scancode: int, action: int, mods: int) -> None:
         mapping = {glfw.KEY_W: 'w', glfw.KEY_A: 'a', glfw.KEY_S: 's', glfw.KEY_D: 'd',
@@ -65,11 +72,52 @@ class MujocoPlayViewer:
                    glfw.KEY_RIGHT: 'right', glfw.KEY_SPACE: 'stop', glfw.KEY_P: 'pause',
                    glfw.KEY_R: 'reset', glfw.KEY_ESCAPE: 'quit'}
         if key in mapping:
+            if action == glfw.PRESS and mapping[key] in {'pause', 'reset', 'stop', 'quit'}:
+                self.release_forces()
             self.controls.key_event(mapping[key], action != glfw.RELEASE, action == glfw.REPEAT)
 
     def _on_focus(self, window, focused: int) -> None:
         if not focused:
+            self.release_forces()
             self.controls.clear_keys()
+
+    def release_forces(self) -> None:
+        """Drop the selected body so no perturbation is applied on the next step."""
+        self.perturb.active = 0
+        self.perturb.select = 0
+        self.controls.publish(mouse_body='none', mouse_force_n=0.0)
+
+    def _on_mouse_button(self, window, button: int, action: int, mods: int) -> None:
+        if button != glfw.MOUSE_BUTTON_LEFT:
+            return
+        self.release_forces()
+        if action != glfw.PRESS or self.controls.status()['paused']:
+            return
+        x, y = glfw.get_cursor_pos(window)
+        self.last_cursor = (x, y)
+        width, height = glfw.get_window_size(window)
+        if width <= 0 or height <= 0:
+            return
+        point = np.zeros(3)
+        ids = np.full(3, -1, dtype=np.int32)
+        body = mujoco.mjv_select(self.model, self.data, self.options, width / height,
+                                 x / width, 1.0 - y / height, self.scene,
+                                 point, ids[0:1], ids[1:2], ids[2:3])
+        if body <= 0 or self.model.body_mass[body] <= 0:
+            return
+        self.perturb.select = body
+        self.perturb.localpos[:] = self.data.xmat[body].reshape(3, 3).T @ (point - self.data.xpos[body])
+        mujoco.mjv_initPerturb(self.model, self.data, self.scene, self.perturb)
+        self.perturb.active = mujoco.mjtPertBit.mjPERT_TRANSLATE
+        self.controls.publish(mouse_body=self.model.body(body).name)
+
+    def apply_forces(self, model: mujoco.MjModel, data: mujoco.MjData) -> None:
+        """Write native perturbation forces after the backend clears its force buffer."""
+        if not self.perturb.active:
+            return
+        mujoco.mjv_applyPerturbForce(model, data, self.perturb)
+        force = float(np.linalg.norm(data.xfrc_applied[self.perturb.select, :3]))
+        self.controls.publish(mouse_force_n=force)
 
     def _on_cursor(self, window, x: float, y: float) -> None:
         dx, dy = x - self.last_cursor[0], y - self.last_cursor[1]
@@ -79,6 +127,10 @@ class MujocoPlayViewer:
         if not left and not right:
             return
         height = max(glfw.get_window_size(window)[1], 1)
+        if self.perturb.active:
+            mujoco.mjv_movePerturb(self.model, self.data, mujoco.mjtMouse.mjMOUSE_MOVE_V,
+                                  dx / height, dy / height, self.scene, self.perturb)
+            return
         if right:
             azimuth = math.radians(self.camera.azimuth)
             elevation = math.radians(self.camera.elevation)
@@ -97,6 +149,7 @@ class MujocoPlayViewer:
         """Poll native events and render the scene and text overlay."""
         glfw.poll_events()
         if glfw.window_should_close(self.window):
+            self.release_forces()
             self.controls.clear_keys()
             return False
         width, height = glfw.get_framebuffer_size(self.window)
@@ -104,7 +157,7 @@ class MujocoPlayViewer:
             return True
         glfw.make_context_current(self.window)
         viewport = mujoco.MjrRect(0, 0, width, height)
-        mujoco.mjv_updateScene(self.model, self.data, self.options, None, self.camera,
+        mujoco.mjv_updateScene(self.model, self.data, self.options, self.perturb, self.camera,
                               mujoco.mjtCatBit.mjCAT_ALL, self.scene)
         mujoco.mjr_render(viewport, self.scene, self.context)
         mujoco.mjr_overlay(mujoco.mjtFont.mjFONT_NORMAL, mujoco.mjtGridPos.mjGRID_TOPLEFT,
@@ -114,6 +167,8 @@ class MujocoPlayViewer:
 
     def close(self) -> None:
         """Free GL resources while their window context is still current."""
+        self.release_forces()
+        self.backend.set_interactive_force_callback(None)
         glfw.make_context_current(self.window)
         self.context.free()
         glfw.destroy_window(self.window)

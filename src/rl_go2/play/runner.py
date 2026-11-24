@@ -73,11 +73,13 @@ def run_loop(env: QuadrupedEnv, policy: torch.nn.Module, controls: Controls,
             if stopped:
                 break
             if reset:
+                viewer.release_forces()
                 env.reset()
                 command.zero_()
                 controls.clear_keys()
                 target = [0.0, 0.0, 0.0]
             if paused:
+                viewer.release_forces()
                 command.zero_()
                 env.task.commands.zero_()
                 controls.publish(command=[0.0, 0.0])
@@ -89,6 +91,7 @@ def run_loop(env: QuadrupedEnv, policy: torch.nn.Module, controls: Controls,
             env.task.commands.copy_(command)
             _, _, done, _ = env.step(policy(env.observe()))
             if bool(done.any()):
+                viewer.release_forces()
                 controls.clear_keys()
                 command.zero_()
                 env.task.commands.zero_()

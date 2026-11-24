@@ -75,7 +75,7 @@ class PlayTests(unittest.TestCase):
         from rl_go2.play.mujoco_viewer import MujocoPlayViewer
 
         controls = Controls(0.8, 0.5)
-        adapter = SimpleNamespace(controls=controls)
+        adapter = SimpleNamespace(controls=controls, release_forces=lambda: None)
         MujocoPlayViewer._on_key(adapter, None, glfw.KEY_W, 0, glfw.PRESS, 0)
         self.assertEqual(controls.sample()[0][0], 0.5)
         MujocoPlayViewer._on_key(adapter, None, glfw.KEY_W, 0, glfw.RELEASE, 0)
@@ -95,7 +95,7 @@ class PlayTests(unittest.TestCase):
 
         camera = mujoco.MjvCamera()
         camera.distance = 3.0
-        adapter = SimpleNamespace(camera=camera, last_cursor=(0.0, 0.0))
+        adapter = SimpleNamespace(camera=camera, last_cursor=(0.0, 0.0), perturb=mujoco.MjvPerturb())
         with patch('glfw.get_mouse_button', return_value=glfw.PRESS), \
                 patch('glfw.get_window_size', return_value=(1280, 800)):
             MujocoPlayViewer._on_cursor(adapter, None, 20, 10)
@@ -106,6 +106,77 @@ class PlayTests(unittest.TestCase):
         self.assertNotEqual(camera.azimuth, 0.0)
         MujocoPlayViewer._on_scroll(adapter, None, 0.0, 1.0)
         self.assertLess(camera.distance, 3.0)
+
+    def test_mujoco_perturbation_survives_each_physics_step_and_adds_task_force(self):
+        import mujoco
+        import numpy as np
+        import torch
+        from rl_go2.backends import make_backend
+        from rl_go2.config import load_experiment
+        from rl_go2.play.mujoco_viewer import MujocoPlayViewer
+        from types import SimpleNamespace
+
+        repo = Path(__file__).resolve().parents[1]
+        config = load_experiment(repo / 'configs/experiments/flat_supermimic.yaml')
+        config.update(backend='mujoco', device='cpu', num_envs=1)
+        backend = make_backend(config)
+        try:
+            perturb = mujoco.MjvPerturb()
+            perturb.select = backend.base
+            scene = mujoco.MjvScene(backend.model, maxgeom=1000)
+            camera = mujoco.MjvCamera()
+            mujoco.mjv_defaultFreeCamera(backend.model, camera)
+            mujoco.mjv_updateScene(backend.model, backend.data, mujoco.MjvOption(), None,
+                                  camera, mujoco.mjtCatBit.mjCAT_ALL, scene)
+            mujoco.mjv_initPerturb(backend.model, backend.data, scene, perturb)
+            perturb.active = mujoco.mjtPertBit.mjPERT_TRANSLATE
+            mujoco.mjv_movePerturb(backend.model, backend.data, mujoco.mjtMouse.mjMOUSE_MOVE_V,
+                                  0.1, 0.0, scene, perturb)
+            adapter = SimpleNamespace(perturb=perturb, controls=Controls(0.8, 0.5))
+            backend.set_interactive_force_callback(
+                lambda model, data: MujocoPlayViewer.apply_forces(adapter, model, data))
+            for _ in range(3):
+                backend.data.xfrc_applied[:] = 0
+                mujoco.mjv_applyPerturbForce(backend.model, backend.data, perturb)
+                expected = backend.data.xfrc_applied[backend.base].copy()
+                self.assertGreater(np.linalg.norm(expected[:3]), 0)
+                expected[0] += 1.0
+                backend.step(torch.zeros(1, 12), base_force=torch.tensor([[1.0, 0.0, 0.0]]))
+                np.testing.assert_allclose(backend.data.xfrc_applied[backend.base], expected)
+            MujocoPlayViewer.release_forces(adapter)
+            backend.step(torch.zeros(1, 12))
+            self.assertFalse(backend.data.xfrc_applied.any())
+            backend.set_interactive_force_callback(None)
+        finally:
+            backend.close()
+
+    def test_mujoco_mouse_selection_and_release(self):
+        import glfw
+        import mujoco
+        import numpy as np
+        from types import SimpleNamespace
+        from rl_go2.play.mujoco_viewer import MujocoPlayViewer
+
+        model = mujoco.MjModel.from_xml_string(
+            '<mujoco><worldbody><body name="box"><freejoint/>'
+            '<geom type="box" size=".1 .1 .1"/></body></worldbody></mujoco>')
+        data = mujoco.MjData(model)
+        mujoco.mj_forward(model, data)
+        controls = Controls(0.8, 0.5)
+        adapter = SimpleNamespace(model=model, data=data, controls=controls,
+                                  perturb=mujoco.MjvPerturb(), options=mujoco.MjvOption(),
+                                  scene=mujoco.MjvScene(model, maxgeom=100))
+        adapter.release_forces = lambda: MujocoPlayViewer.release_forces(adapter)
+        with patch('glfw.get_cursor_pos', return_value=(640, 400)), \
+                patch('glfw.get_window_size', return_value=(1280, 800)), \
+                patch('mujoco.mjv_select', return_value=1), patch('mujoco.mjv_initPerturb'):
+            MujocoPlayViewer._on_mouse_button(adapter, None, glfw.MOUSE_BUTTON_LEFT, glfw.PRESS, 0)
+        self.assertEqual(adapter.perturb.select, 1)
+        self.assertTrue(adapter.perturb.active)
+        self.assertEqual(controls.status()['mouse_body'], 'box')
+        MujocoPlayViewer._on_mouse_button(adapter, None, glfw.MOUSE_BUTTON_LEFT, glfw.RELEASE, 0)
+        self.assertFalse(adapter.perturb.active)
+        np.testing.assert_array_equal(adapter.perturb.localpos, [0, 0, 0])
 
     def test_playback_lighting_uses_a_separate_model(self):
         import mujoco

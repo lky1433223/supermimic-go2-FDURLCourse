@@ -16,12 +16,16 @@ class PlayViewer(Protocol):
         """Release window-owned resources before the simulation closes."""
         ...
 
+    def release_forces(self) -> None:
+        """Release mouse grabs before pause, reset or automatic recovery."""
+        ...
+
 
 def create_viewer(env: QuadrupedEnv, controls: Controls, backend: str) -> PlayViewer:
     """Attach the explicit adapter for the selected simulation backend."""
     if backend == 'mujoco':
         from .mujoco_viewer import MujocoPlayViewer
-        return MujocoPlayViewer(env.backend.model, env.backend.data, controls)
+        return MujocoPlayViewer(env.backend, controls)
     if backend == 'genesis':
         from .genesis_viewer import GenesisPlayViewer
         return GenesisPlayViewer(env.backend.scene.viewer, controls)

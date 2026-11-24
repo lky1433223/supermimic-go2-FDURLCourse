@@ -1,9 +1,23 @@
 """Genesis native key events and a lightweight text HUD plugin."""
 import pyglet
-from pyglet.window import key
-from genesis.vis.viewer_plugins import EVENT_HANDLED, ViewerPlugin
+from pyglet.window import key, mouse
+from genesis.vis.viewer_plugins import EVENT_HANDLED, MouseInteractionPlugin, ViewerPlugin
 
 from .controls import Controls, hud_text
+
+
+class ForceDragPlugin(MouseInteractionPlugin):
+    """Use Genesis spring-force dragging and release grips on focus/control changes."""
+
+    def __init__(self) -> None:
+        super().__init__(use_force=True, spring_slack=0.02)
+
+    def on_deactivate(self) -> None:
+        self.on_mouse_release(0, 0, mouse.LEFT, 0)
+
+    def on_key_press(self, symbol: int, modifiers: int) -> None:
+        if symbol in (key.P, key.R, key.SPACE, key.ESCAPE):
+            self.on_mouse_release(0, 0, mouse.LEFT, 0)
 
 
 class PlaybackPlugin(ViewerPlugin):
@@ -61,7 +75,9 @@ class GenesisPlayViewer:
     def __init__(self, viewer, controls: Controls):
         self.viewer = viewer
         self.plugin = PlaybackPlugin(controls)
+        self.force_drag = ForceDragPlugin()
         viewer.add_plugin(self.plugin)
+        viewer.add_plugin(self.force_drag)
 
     def refresh(self) -> bool:
         """Keep events and HUD responsive even while physics is paused."""
@@ -73,5 +89,10 @@ class GenesisPlayViewer:
     def close(self) -> None:
         """Detach the plugin before the backend destroys the window."""
         if self.viewer.is_alive():
+            self.viewer.remove_plugin(self.force_drag)
             self.viewer.remove_plugin(self.plugin)
         self.plugin.on_close()
+
+    def release_forces(self) -> None:
+        """Release the spring grab after a reset or pause."""
+        self.force_drag.on_mouse_release(0, 0, mouse.LEFT, 0)

@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
@@ -73,6 +74,7 @@ class MujocoBackend:
         if not np.allclose(self.model.actuator_gear[self.motors, 0], 1):
             raise ValueError("Only unit-gear direct torque motors are supported")
         self.viewer = None
+        self._interactive_force_callback: Callable[[mujoco.MjModel, mujoco.MjData], None] | None = None
         self.reset(torch.tensor([0]))
         if viewer:
             from mujoco import viewer as viewer_module
@@ -135,6 +137,16 @@ class MujocoBackend:
         """Return current authored link orientations in link_names order (world wxyz)."""
         return torch.from_numpy(self.data.xquat[self._link_indices]).float().unsqueeze(0)
 
+    def set_interactive_force_callback(
+        self, callback: Callable[[mujoco.MjModel, mujoco.MjData], None] | None,
+    ) -> None:
+        """Register a force writer called after clearing forces on each physics step.
+
+        The callback writes world-frame forces and COM torques into xfrc_applied.
+        Task forces and link-point forces are added afterwards. Pass None to detach.
+        """
+        self._interactive_force_callback = callback
+
     def step(
         self,
         torque: torch.Tensor,
@@ -146,10 +158,12 @@ class MujocoBackend:
         if link_point_forces is not None:
             link_point_forces.validate(self.num_envs, len(self.link_names))
         self.data.xfrc_applied[:] = 0
+        if self._interactive_force_callback is not None:
+            self._interactive_force_callback(self.model, self.data)
         if base_force is not None:
             if base_force.shape != (1, 3) or not torch.isfinite(base_force).all():
                 raise ValueError("base_force must have shape (1, 3) and be finite")
-            self.data.xfrc_applied[self.base, :3] = base_force[0].detach().cpu().numpy()
+            self.data.xfrc_applied[self.base, :3] += base_force[0].detach().cpu().numpy()
         if link_point_forces is not None:
             self._apply_link_point_forces(link_point_forces)
         self.data.ctrl[self.motors] = torque[0].detach().cpu().numpy()
