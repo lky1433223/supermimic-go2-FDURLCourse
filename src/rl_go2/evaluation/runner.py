@@ -1,24 +1,13 @@
 """Load the evaluation inputs, run a task, and save its artifacts."""
-from contextlib import contextmanager, nullcontext
+from contextlib import nullcontext
+from dataclasses import asdict
 from hashlib import file_digest
 import json
 from pathlib import Path
 import socket
 import sys
 
-
-@contextmanager
-def environment(config, seed, *, viewer, record_transitions):
-    import torch
-
-    from rl_go2.env import QuadrupedEnv
-
-    torch.manual_seed(seed)
-    env = QuadrupedEnv({**config, 'seed': seed}, viewer=viewer, record_transitions=record_transitions)
-    try:
-        yield env
-    finally:
-        env.close()
+from .executor import execute_plan
 
 
 def load_policy(args, training, config):
@@ -51,7 +40,7 @@ def write_json(path, value):
     path.write_text(json.dumps(value, indent=2) + '\n')
 
 
-def run_evaluation(args, task, condition_name, parameters):
+def run_evaluation(args, task):
     import torch
 
     from rl_go2.trainers import output_directory
@@ -62,9 +51,11 @@ def run_evaluation(args, task, condition_name, parameters):
     config_path = training / 'config.json'
     config = json.loads(config_path.read_text())
     config.update(backend=args.backend, device=args.device, num_envs=args.num_envs, curriculum={'name': 'none'})
-    configure = getattr(task, 'configure', None)
-    if configure is not None:
-        configure(config, parameters)
+    plan = task.build_plan(args.steps)
+    conditions = tuple({trial.condition.name: trial.condition for trial in plan.trials}.values())
+    condition_name = conditions[0].name if len(conditions) == 1 else 'comparison'
+    if plan.episode_seconds is not None:
+        config['task'].update(episode_seconds=plan.episode_seconds, command_resample_seconds=plan.episode_seconds)
 
     torch.set_num_threads(2)
     policy, weight_path, iteration = load_policy(args, training, config)
@@ -85,13 +76,21 @@ def run_evaluation(args, task, condition_name, parameters):
 
     metadata = {
         **common, 'hostname': host, 'weights': str(weight_path), 'weights_sha256': digest,
-        'config_source': str(config_path), 'task_config_source': str(args.config.resolve()) if args.config else None,
-        'parameters': parameters, 'config': config,
+        'config_source': str(config_path), 'config': conditions[0].apply(config),
+        'physical_conditions': [asdict(condition) for condition in conditions],
     }
-    run_options = {}
+    metadata['trials'] = [asdict(trial) for trial in plan.trials]
+    motions = {}
+    for trial in plan.trials:
+        if trial.motion is not None:
+            group = motions.setdefault(trial.group or 'straight', [])
+            motion = asdict(trial.motion)
+            if motion not in group:
+                group.append(motion)
+    if motions:
+        metadata['motion_tasks'] = motions
     if args.steps is not None:
         metadata['steps'] = args.steps
-        run_options['steps'] = args.steps
     recording = nullcontext()
     video_metadata = {}
     if args.video:
@@ -107,7 +106,7 @@ def run_evaluation(args, task, condition_name, parameters):
     write_json(dest / 'eval-config.json', metadata)
     print(f'Evaluation output: {dest.resolve()}', file=sys.stderr, flush=True)
     with recording as video:
-        report = task.run(config, policy, seeds, viewer=args.viewer, video=video, **run_options)
+        report = execute_plan(config, policy, seeds, plan, viewer=args.viewer, video=video)
 
     assessment = {**common, **report}
     write_json(condition / 'assessment.json', assessment)

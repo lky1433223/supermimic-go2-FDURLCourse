@@ -1,0 +1,69 @@
+"""Physical evaluation conditions, independent of robot motion tasks."""
+from copy import deepcopy
+from dataclasses import dataclass
+
+from rl_go2.config import FOOT_NAMES, base_com_offset_ranges, base_mass_scale_range, foot_friction_ranges
+
+
+@dataclass(frozen=True)
+class FrictionPhase:
+    duration_seconds: float
+    multiplier: float
+
+
+@dataclass(frozen=True)
+class EvaluationCondition:
+    name: str
+    foot_ground_friction: dict | None = None
+    base_mass: dict | None = None
+    base_com: dict | None = None
+    friction_phases: tuple[FrictionPhase, ...] = ()
+
+    def validate(self) -> None:
+        """Validate all physical fields before loading the evaluated policy."""
+        config = self.apply({})
+        base_mass_scale_range(config)
+        base_com_offset_ranges(config)
+        ranges = foot_friction_ranges(config)
+        if self.friction_phases:
+            if ranges is None:
+                raise ValueError('Friction phases require enabled foot friction')
+            if any(lo != hi for foot in ranges[0] for lo, hi in foot):
+                raise ValueError('Friction phases require fixed per-foot base values')
+            for phase in self.friction_phases:
+                if not 0 < phase.duration_seconds < float('inf') or not 0 < phase.multiplier < float('inf'):
+                    raise ValueError('Phase duration and multiplier must be finite and positive')
+
+    def apply(self, config: dict) -> dict:
+        """Build the environment configuration for this condition."""
+        domain = {}
+        parameters = {'foot_ground_friction': self.foot_ground_friction,
+                      'base_mass': self.base_mass, 'base_com': self.base_com}
+        for key, value in parameters.items():
+            if value is None:
+                domain.pop(key, None)
+            else:
+                domain[key] = deepcopy(value)
+        return {**config, 'domain_randomization': domain}
+
+    def phase_schedule(self, dt: float) -> dict[int, FrictionPhase]:
+        schedule = {}
+        elapsed = 0.0
+        for phase in self.friction_phases:
+            step = round(elapsed / dt)
+            if phase.duration_seconds <= 0 or round((elapsed + phase.duration_seconds) / dt) <= step:
+                raise ValueError('Friction phases must span at least one control step')
+            schedule[step] = phase
+            elapsed += phase.duration_seconds
+        return schedule
+
+    def apply_phase(self, env, phase: FrictionPhase) -> None:
+        import torch
+
+        ratio = env.foot_friction.new_tensor([phase.multiplier])
+        env.backend.set_foot_friction_multipliers(ratio, torch.arange(env.num_envs, device=env.device))
+        base = env.foot_friction.new_tensor([
+            [self.foot_ground_friction['base_ranges'][foot][term][0]
+             for term in ('sliding', 'torsional', 'rolling')] for foot in FOOT_NAMES
+        ])
+        env.foot_friction.copy_((base * ratio[0]).reshape(1, 12))

@@ -1,32 +1,35 @@
-"""Smoke-check a saved policy by running it in simulation."""
-
-from ..runner import environment
-
-TASK = 'rollout'
-TASK_DESCRIPTION = 'Run a saved policy for a fixed number of simulation steps per seed.'
-DEFAULT_STEPS = 1000
+"""A fixed straight-walking smoke test with explicit physical conditions."""
+from ..conditions import EvaluationCondition
+from ..motion_tasks import MotionTask
+from ..task import EvaluationTask
 
 
-def run(config, policy, seeds, *, viewer=False, video=None, steps=DEFAULT_STEPS):
-    import torch
+class RolloutTask(EvaluationTask):
+    TASK = 'rollout'
+    TASK_DESCRIPTION = 'Run fixed 0.5 m/s straight walking for a step budget.'
 
-    results = []
-    with torch.inference_mode():
-        for seed in seeds:
-            total_reward = 0.0
-            resets = 0
-            with environment(config, seed, viewer=viewer, record_transitions=video is not None) as env:
-                for step in range(1, steps + 1):
-                    observation, reward, done, extras = env.step(policy(env.observe()))
-                    if not torch.isfinite(observation).all() or not torch.isfinite(reward).all():
-                        raise RuntimeError('Non-finite simulation output')
-                    total_reward += reward.mean().item()
-                    resets += int(done.sum())
-                    if video is not None:
-                        video.frame(env, extras['transition'], step=step, label=f'Seed {seed} | rollout',
-                                    done=bool(done[0]) or step == steps)
-                results.append({'seed': seed, 'steps': steps, 'seconds': steps * env.dt,
-                                'observation_shape': list(observation.shape),
-                                'mean_total_reward': total_reward, 'episode_resets': resets,
-                                'policy_updates': 0})
-    return {'device': config['device'], 'num_envs': config['num_envs'], 'per_case': results}
+    conditions = (
+        EvaluationCondition(
+            name='nominal',
+            foot_ground_friction={
+                'enabled': True,
+                'env_multiplier_range': [0.75, 1.25],
+                'base_ranges': {
+                    foot: {'sliding': [0.8, 0.8], 'torsional': [0.02, 0.02], 'rolling': [0.01, 0.01]}
+                    for foot in ('FR', 'FL', 'RR', 'RL')
+                },
+            },
+            base_mass={'enabled': True, 'scale_range': [0.9, 1.1]},
+            base_com={'enabled': True, 'offset_ranges_m': {
+                'x': [-0.01, 0.01], 'y': [-0.03, 0.03], 'z': [-0.01, 0.01],
+            }},
+        ),
+    )
+    motions = {'': (MotionTask('forward_0.5', 0.5, yaw_rate=0, duration_seconds=20),)}
+    metrics = 'rollout'
+    report = {}
+    episode_seconds = 20
+    continue_after_reset = True
+    reset_before_start = False
+    supports_parallel = True
+    default_steps = 1000

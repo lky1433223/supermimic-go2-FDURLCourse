@@ -28,8 +28,13 @@ output/<实验目录>/
 ```
 
 评测统一使用 `scripts/evaluate.py`。用 `--list-tasks` 查看四个 task，用 `--help` 查看所有参数。
-用 `--task` 选择评测，或用 `--config` 读取包含 `task`、`condition` 和 `parameters` 的 JSON。
-环境来自训练目录的 `training/config.json`，task 参数再应用到该配置。评测产物中的 `eval-config.json` 保存生效配置。
+用 `--task` 选择评测。四个 `evaluation/tasks/*.py` 文件分别显式列出 `conditions`、`motions`、
+`metrics`、`report`、`episode_seconds` 和结束规则。摩擦、质量、质心与动作都直接在对应文件中修改。
+训练目录的 `training/config.json` 提供机器人、场景和控制参数，物理工况由评测 Python 定义覆盖。
+`conditions.py` 和 `motion_tasks.py` 提供通用数据类，四个类通过基类的 `build_plan()` 展开工况与动作组合。
+生效定义写入 `eval-config.json` 的 `physical_conditions` 和 `motion_tasks`。
+`executor.py` 负责唯一的步进循环，`metrics.py` 采集指标。`rollout` 在计划中声明重置后继续，
+其他评测在当前试次结束后切换下一项。展开后的试次保存为 `eval-config.json` 中的 `trials`。
 权重轮次无法推断时，用 `--iteration` 指定。各 task 都可用 `--viewer` 实时查看，或在 MuJoCo 下加 `--video` 保存同一次仿真的回放。
 ICC 无窗口录制使用 `MUJOCO_GL=egl`。显式 `--output` 指向本次评测的新目录。
 录制时可用 `--video --video-view front` 选正面视角，`rear`、`left`、`right` 分别为后、左、右。
@@ -62,12 +67,13 @@ uv run --extra train python scripts/evaluate.py --run-dir output/flat-supermimic
 
 ### 固定低摩擦评测
 
-`low-friction` 复用标准速度跟踪的 27 项测试。下例将左前、右前、左后、右后的滑动摩擦分别固定为
-0.1、0.6、0.2、0.8。修改 JSON 中的 `condition` 和四脚系数即可复测其他工况。质心和质量设置沿用训练配置。
+`low-friction` 在 `tasks/low_friction.py` 中显式列出四组工况，每组各跑 27 项，每个种子共 108 项。
+四组分别是四脚统一 0.1、统一 0.2、左侧低摩擦和右侧低摩擦。左右侧低摩擦的四脚系数也直接列在文件中。
+各组质量倍率 0.9–1.1，质心 X/Z 偏移各 ±1 cm、Y 偏移 ±3 cm，都在该文件里声明。
+修改 `conditions` 即可复测其他工况，多个工况会分别执行整张动作列表。
 
 ```bash
-uv run --extra train python scripts/evaluate.py --run-dir output/flat-supermimic-guided-001 \
-  --config configs/evaluation/low_friction.example.json
+uv run --extra train python scripts/evaluate.py --run-dir output/flat-supermimic-guided-001 --task low-friction
 ```
 
 ### 行进中切换摩擦
