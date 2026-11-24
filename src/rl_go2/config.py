@@ -174,12 +174,58 @@ def validate_scene_robot(scene: dict, robot: dict) -> None:
         raise ValueError("Scene must contain exactly one robot matching robot.entity_id")
 
 
+def joint_position_bounds(
+    robot: dict,
+) -> tuple[tuple[float, float], ...] | None:
+    """Return physical joint bounds in radians, ordered by robot.joint_names."""
+    if "joint_position_limits" not in robot:
+        return None
+    ranges = robot["joint_position_limits"]
+    names = robot["joint_names"]
+    margin = robot.get("joint_limit_margin", 0.0)
+    if not isinstance(ranges, dict) or set(ranges) != set(names):
+        raise ValueError("Joint limits must cover joint_names")
+    if type(margin) not in (int, float) or not math.isfinite(margin) or margin < 0:
+        raise ValueError("Joint limit margin must be finite and nonnegative")
+
+    defaults = robot["default_joint_positions"]
+    resets = robot.get("reset_joint_positions", defaults)
+    bounds = []
+    for name, default, reset in zip(names, defaults, resets, strict=True):
+        pair = ranges[name]
+        if (not isinstance(pair, (list, tuple)) or len(pair) != 2
+                or not all(type(angle) in (int, float) and math.isfinite(angle) for angle in pair)):
+            raise ValueError(f"Joint limits for {name} must be two finite angles in radians")
+        lower, upper = pair
+        if lower + margin >= upper - margin:
+            raise ValueError(f"Joint limits for {name} must be ordered with room for the margin")
+        if not lower + margin <= default <= upper - margin:
+            raise ValueError(f"Default joint positions must lie inside the joint limit margin: {name}")
+        if not lower <= reset <= upper:
+            raise ValueError(f"Reset joint positions must lie inside the physical joint limits: {name}")
+        bounds.append((lower, upper))
+    return tuple(bounds)
+
+
+def _apply_robot_overrides(robot: dict, overrides: object) -> None:
+    """Apply per-joint experiment overrides to the resolved robot configuration."""
+    if not isinstance(overrides, dict) or overrides.keys() - {"joint_position_limits"}:
+        raise ValueError("robot_overrides supports only joint_position_limits")
+    limits = overrides.get("joint_position_limits", {})
+    if not isinstance(limits, dict) or limits.keys() - set(robot["joint_names"]):
+        raise ValueError("robot_overrides.joint_position_limits must use known joint names")
+    if limits:
+        robot["joint_position_limits"] = {**robot.get("joint_position_limits", {}), **limits}
+
+
 def load_experiment(path):
     path = Path(path).resolve()
     config = read_yaml(path)
     robot_path = path.parent / config["robot"]
     for key in ("robot", "task"):
         config[key] = read_yaml(path.parent / config[key])
+    robot = config["robot"]
+    _apply_robot_overrides(robot, config.pop("robot_overrides", {}))
     scene = config['scene']
     if isinstance(scene, dict):
         from rl_go2.training_scene import build_training_scene
@@ -188,7 +234,6 @@ def load_experiment(path):
         config['scene'] = validate_scene(scene, path)
     else:
         config['scene'] = load_scene(path.parent / scene)
-    robot = config["robot"]
     validate_scene_robot(config["scene"], robot)
     names = robot["joint_names"]
     if not names or len(set(names)) != len(names):
@@ -201,6 +246,7 @@ def load_experiment(path):
         if (not isinstance(positions, list) or len(positions) != len(names)
                 or not all(type(angle) in (int, float) and math.isfinite(angle) for angle in positions)):
             raise ValueError("reset_joint_positions must provide one finite angle per joint in joint_names order")
+    joint_position_bounds(robot)
     if min(robot["torque_limits"]) <= 0 or robot["kp"] < 0 or robot["kd"] < 0:
         raise ValueError("Invalid PD gains or torque limits")
     decimation = robot["control_decimation"]

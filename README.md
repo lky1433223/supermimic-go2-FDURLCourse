@@ -483,10 +483,11 @@ Replay 保存实际执行的裁剪动作、previous_action、上下文、reward�
 扫描以机身航向为坐标系，前后偏移为 −0.30 到 +0.50 m，左右偏移为 −0.25 到 +0.25 m，间隔均为 0.10 m。
 54 个值按前后行、左右列排列，每个值为地面 Z 减去机身 Z。格内读取实际砖高，地块外读取平面高度。
 归一化统计按真实位姿查询，多步模型拟合和想象 rollout 在后续步按预测位姿重新查询。Replay 保留世界位姿，地图写入生效配置。
-Actor、Critic、奖励和终止仍使用原有定义。平地 checkpoint 可通过 `--init-checkpoint` 初始化，新高程输入的首层权重从零开始。
+Actor、Critic、奖励和终止仍使用原有定义。机器人控制配置一致时，可通过 `--init-checkpoint` 从平地 checkpoint 初始化，新高程输入的首层权重从零开始。
 54 点扫描读取场景中固定箱体的实际表面，支持台阶、缓坡和随机砖块。
 
 `configs/experiments/terrain_supermimic_push.yaml` 提供多地形联合泛化配方。
+该配方通过 `robot_overrides.joint_position_limits` 将左右后髋的物理范围设为约 ±48°，PD 目标在两端各留 0.05 rad。限位按关节名合并并随训练配置保存，Genesis 和 MuJoCo 都使用合并后的范围。已有 checkpoint 的限位不同时，使用该配方从零训练。
 `scene.terrains` 以 `flat`、`step`、`ramp`、`rough_ground` 为键，声明本次训练要生成的地形。
 `weight` 决定每回合选择各类别的相对概率，类别内部均匀选择地块。
 各类可通过 `map_count` 指定地块数量，默认平地 1 块，其余各 8 块。

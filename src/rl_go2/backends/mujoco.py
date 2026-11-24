@@ -1,4 +1,5 @@
 from collections.abc import Callable
+import math
 from pathlib import Path
 import sys
 import time
@@ -10,7 +11,7 @@ import numpy as np
 import torch
 
 from rl_go2.backends import LinkPointForces
-from rl_go2.config import FOOT_NAMES, foot_friction_ranges
+from rl_go2.config import FOOT_NAMES, foot_friction_ranges, joint_position_bounds
 from rl_go2.mujoco_visuals import brighten_scene
 from rl_go2.state import RobotState
 
@@ -53,6 +54,18 @@ class MujocoBackend:
         option.set("timestep", str(sim["dt"]))
         option.set("gravity", " ".join(map(str, sim["gravity"])))
         world = root.find("worldbody")
+        names = config["robot"]["joint_names"]
+        bounds = joint_position_bounds(config["robot"])
+        if bounds is not None:
+            ranges = dict(zip(names, bounds, strict=True))
+            for joint in world.iter("joint"):
+                name = joint.get("name")
+                if name in ranges:
+                    lower, upper = ranges[name]
+                    if compiler.get("angle") != "radian":
+                        lower, upper = math.degrees(lower), math.degrees(upper)
+                    joint.set("range", f"{lower} {upper}")
+                    joint.set("limited", "true")
         for entity in config["scene"]["entities"]:
             if entity.get("robot"):
                 continue
@@ -77,7 +90,6 @@ class MujocoBackend:
                     or np.any(self.model.geom_condim[self.foot_ids] != 6)
                     or has_explicit_pair):
                 raise ValueError("Foot friction requires implicit surface contacts with higher-priority condim=6 feet")
-        names = config["robot"]["joint_names"]
         joints = [self.model.joint(name).id for name in names]
         self.q_indices = self.model.jnt_qposadr[joints]
         self.v_indices = self.model.jnt_dofadr[joints]

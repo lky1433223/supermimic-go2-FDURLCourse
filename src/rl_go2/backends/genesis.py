@@ -1,7 +1,13 @@
 import torch
 
 from rl_go2.backends import LinkPointForces
-from rl_go2.config import FOOT_NAMES, base_com_offset_ranges, base_mass_scale_range, foot_friction_ranges
+from rl_go2.config import (
+    FOOT_NAMES,
+    base_com_offset_ranges,
+    base_mass_scale_range,
+    foot_friction_ranges,
+    joint_position_bounds,
+)
 from rl_go2.state import RobotState
 
 
@@ -9,6 +15,7 @@ class GenesisBackend:
     def __init__(self, config, viewer=False):
         import genesis as gs
 
+        bounds = joint_position_bounds(config["robot"])
         device = config["device"]
         choices = {"cpu": gs.cpu, "cuda": gs.cuda, "mps": gs.metal}
         if device not in choices:
@@ -61,6 +68,9 @@ class GenesisBackend:
                 raise ValueError("Foot friction requires one geom per surface and one collision sphere per Go2 calf")
             self.friction_geom_ids = [ids[0] for ids in feet] + [surface.geoms[0].idx for surface in surfaces]
         self.joints = [self.robot.get_joint(name).dofs_idx_local[0] for name in config["robot"]["joint_names"]]
+        if bounds is not None:
+            lower, upper = zip(*bounds)
+            self.robot.set_dofs_limit(lower, upper, dofs_idx_local=self.joints)
         self.base = self.robot.get_link(config["robot"]["base_link"])
         links = sorted(self.robot.links, key=lambda link: link.name)
         self.link_names = tuple(link.name for link in links)

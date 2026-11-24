@@ -92,6 +92,10 @@ class FrameworkTests(unittest.TestCase):
 
     def test_training_terrain_weights_and_partial_reset(self):
         config = load_experiment(ROOT / 'configs/experiments/terrain_supermimic_push.yaml')
+        limits = config['robot']['joint_position_limits']
+        self.assertEqual(limits['RR_hip_joint'], [-0.837758, 0.837758])
+        self.assertEqual(limits['RL_hip_joint'], limits['RR_hip_joint'])
+        self.assertEqual(limits['FR_hip_joint'], self.config['robot']['joint_position_limits']['FR_hip_joint'])
         patches = config['scene']['terrain_patches']
         weights = {}
         for patch in patches:
@@ -556,6 +560,7 @@ class FrameworkTests(unittest.TestCase):
     def test_joint_target_limits_and_legacy_config(self):
         config = deepcopy(self.config)
         config.update(backend="mujoco", device="cpu", num_envs=1)
+        config['robot']['joint_position_limits']['RR_hip_joint'] = [-0.837758, 0.837758]
         env = QuadrupedEnv(config)
         try:
             controller = env.controller
@@ -578,6 +583,10 @@ class FrameworkTests(unittest.TestCase):
             bad = deepcopy(config['robot'])
             bad['joint_position_limits']['FR_calf_joint'] = [0., 1.]
             with self.assertRaisesRegex(ValueError, 'Default joint positions'):
+                JointPositionControl(bad, 'cpu')
+            bad = deepcopy(config['robot'])
+            bad['reset_joint_positions'][6] = -0.9
+            with self.assertRaisesRegex(ValueError, 'Reset joint positions.*RR_hip_joint'):
                 JointPositionControl(bad, 'cpu')
         finally:
             env.close()
@@ -612,6 +621,7 @@ class FrameworkTests(unittest.TestCase):
     def test_genesis_absolute_pose_partial_reset_and_timeout(self):
         config = deepcopy(self.config)
         config.update(backend="genesis", device="cpu", num_envs=2)
+        config['robot']['joint_position_limits']['RR_hip_joint'] = [-0.837758, 0.837758]
         config["task"]["episode_seconds"] = 0.04
         config["domain_randomization"] = {"foot_ground_friction": {
             "enabled": True, "env_multiplier_range": [0.75, 1.25], "switch_interval_seconds": [0.04, 0.04],
@@ -619,6 +629,12 @@ class FrameworkTests(unittest.TestCase):
                             for foot in ("FR", "FL", "RR", "RL")}}}
         env = QuadrupedEnv(config, record_transitions=True)
         try:
+            backend = env.backend
+            lower, upper = backend.robot.get_dofs_limit(backend.joints)
+            limits = torch.tensor([config['robot']['joint_position_limits'][name]
+                                   for name in config['robot']['joint_names']])
+            torch.testing.assert_close(lower, limits[:, 0])
+            torch.testing.assert_close(upper, limits[:, 1])
             torch.testing.assert_close(env.state.position, torch.tensor([[0., 0., 0.42]]).expand(2, -1))
             torch.testing.assert_close(env.state.quaternion, torch.tensor([[1., 0., 0., 0.]]).expand(2, -1))
             expected = torch.tensor(env.config["robot"]["reset_joint_positions"], device=env.device)
@@ -629,7 +645,6 @@ class FrameworkTests(unittest.TestCase):
             env.step(torch.zeros(2, 12), base_force=force)
             self.assertFalse(torch.equal(env.foot_friction[0], friction[0]))
             torch.testing.assert_close(env.foot_friction[1], friction[1])
-            backend = env.backend
             ratios = backend.scene.rigid_solver.get_geoms_friction_ratio(backend.friction_geom_ids)
             torch.testing.assert_close(ratios, (env.foot_friction[:, :1] / 0.8).expand_as(ratios))
             self.assertGreater(float(env.state.linear_velocity[0, 0]), float(env.state.linear_velocity[1, 0]))

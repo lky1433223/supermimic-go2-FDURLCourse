@@ -28,6 +28,10 @@ scene:
       max_height_level: 2
       max_adjacent_delta_levels: 1
 robot: ../robots/go2.yaml
+robot_overrides:
+  joint_position_limits:
+    RR_hip_joint: [-0.837758, 0.837758]  # radians, about ±48°
+    RL_hip_joint: [-0.837758, 0.837758]
 task: ../tasks/flat_walk_vx0.yaml
 backend: genesis
 device: cuda
