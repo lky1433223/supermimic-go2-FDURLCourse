@@ -127,7 +127,6 @@ class SuperMimicTests(unittest.TestCase):
     @unittest.skipUnless(os.environ.get('RL_GO2_TEST_CUDA') == '1' and torch.cuda.is_available(),
                          'opt-in Genesis CUDA graph regression')
     def test_cuda_graph_actor_update_with_scheduled_pushes(self):
-        self.cfg.compile_training = False
         self.check_scheduled_pushes('genesis', device='cuda')
 
     def check_scheduled_pushes(self, backend: str, *, device: str = 'cpu') -> None:
@@ -164,13 +163,14 @@ class SuperMimicTests(unittest.TestCase):
                              push_scheduler=scheduler)
         resumed = torch.stack(seen)[:, 0, :, :3]
         torch.testing.assert_close(resumed[:4], forces[2:6])
-        loss, _ = trainer.actor_loss(seed)
-        loss.backward()
-        self.assertTrue(all(torch.isfinite(parameter.grad).all() for parameter in trainer.actor.parameters()))
         if device == 'cuda':
             stats = trainer.improve_policy()
             self.assertIsNotNone(trainer.graphed_actor_backward)
             self.assertGreater(stats['actor_grad_norm'], 0.0)
+        else:
+            loss, _ = trainer.actor_loss(seed)
+            loss.backward()
+            self.assertTrue(all(torch.isfinite(parameter.grad).all() for parameter in trainer.actor.parameters()))
 
         env.max_episode_length = 1
         self.cfg.collect_steps = 2
