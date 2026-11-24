@@ -472,14 +472,27 @@ Replay 保存实际执行的裁剪动作、previous_action、上下文、reward�
 支持模型训练的任务额外提供以下纯批量接口：
 
 - `observe(state, previous_action, context)`、`reward(..., context)`：显式读取采样上下文，复用真实任务公式。
-- `model_features(state, context) -> [batch, F]`：物理参数、局部高度扫描等；平地返回空特征，宽度在初始化时推导。
+- `model_features(state, context) -> [batch, F]`：任务附加特征，例如随机化的物理参数，宽度在初始化时推导。
 - `advance_context(context, next_state)`：推进命令/阶段，可根据预测世界位姿准备扫描；不得修改真实任务状态。
 - `termination_probability(...)`：模型内可微终止概率，真实环境仍使用硬阈值。
 - 可选 `metrics(state, context)`：每个值首维为 batch 的物理指标字典；训练日志只聚合 actor 环境，driver 回报单独记录。
 
-Context 为固定键集合的小型张量字典，replay 自动保存；地形图由任务持有，context 仅记录地图索引等数据。
-模型内逐步从预测位姿重算物理特征；当前拟合阶段使用 replay 的逐步特征，新增地形时必须验证二者分布的一致性。
-新任务仍需实现地形资产、相对地面的高度奖励/终止、接触几何、重置和课程，不能只增加网络输入维数。
+实验配置选择含箱体的地形或多地形集合时，世界模型从解析后的碰撞几何查询局部地面。
+扫描以机身航向为坐标系，前后偏移为 −0.30 到 +0.50 m，左右偏移为 −0.25 到 +0.25 m，间隔均为 0.10 m。
+54 个值按前后行、左右列排列，每个值为地面 Z 减去机身 Z。格内读取实际砖高，地块外读取平面高度。
+归一化统计按真实位姿查询，多步模型拟合和想象 rollout 在后续步按预测位姿重新查询。Replay 保留世界位姿，地图写入生效配置。
+Actor、Critic、奖励和终止仍使用原有定义。平地 checkpoint 可通过 `--init-checkpoint` 初始化，新高程输入的首层权重从零开始。
+54 点扫描读取场景中固定箱体的实际表面，支持台阶、缓坡和随机砖块。
+
+`configs/experiments/terrain_supermimic_push.yaml` 提供多地形联合泛化配方。
+`scene.terrains` 以 `flat`、`step`、`ramp`、`rough_ground` 为键，声明本次训练要生成的地形。
+`weight` 决定每回合选择各类别的相对概率，类别内部均匀选择地块。
+各类可通过 `map_count` 指定地块数量，默认平地 1 块，其余各 8 块。
+台阶的 `height_range_m`、缓坡的 `slope_range_deg` 在启动时采样具体参数，随机地面使用连续种子生成。
+生成结果与各地块出生位姿写入生效配置，地块沿 Y 方向间隔 20 m。
+环境重置时按权重重新选择地块并设置出生位姿。单次运行的碰撞几何固定。
+实验中的物理随机化和速度任务继续由 `domain_randomization` 与 `task` 配置。
+地形课程和基于地形的奖励、终止规则留待后续设计。
 若引入执行延迟，需把真正的执行器状态加入动力学状态，不能用无约束 previous_action 快捷输入代替。
 
 输出目录必须不存在，保存完整配置、策略约定、资产哈希、逐轮 `metrics.jsonl` 和网络/优化器 checkpoint。

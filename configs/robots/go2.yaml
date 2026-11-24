@@ -1,4 +1,5 @@
 entity_id: go2
+file: ../../assets/robots/go2/go2.xml
 base_link: base
 joint_names:
   - FR_hip_joint

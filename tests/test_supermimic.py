@@ -2,6 +2,7 @@
 from copy import deepcopy
 from dataclasses import asdict
 import json
+import math
 import os
 from pathlib import Path
 import tempfile
@@ -11,13 +12,14 @@ from unittest.mock import patch
 import torch
 
 from rl_go2.backends import LinkPointForces
-from rl_go2.config import FOOT_NAMES, load_experiment
+from rl_go2.config import FOOT_NAMES, load_experiment, load_scene
 from rl_go2.env import QuadrupedEnv
 from rl_go2.point_push import Go2PushGeometry, PointPushConfig, PointPushScheduler, PushState
 from rl_go2.trainers.model_learning import DynamicsModel, ReplayBuffer, pack, unpack, quat_mul, conjugate
 from rl_go2.state import rotate_inverse
 from rl_go2.trainers.supermimic import Trainer, TrainConfig, imagined_rollout, frozen, lambda_returns, train
 from rl_go2.trainers.supermimic_init import initialize_weights
+from rl_go2.trainers.terrain_features import TerrainHeightScan
 from test_framework import FakeBackend
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -39,6 +41,63 @@ class SuperMimicTests(unittest.TestCase):
     def test_cuda_acceleration_defaults(self):
         config = TrainConfig()
         self.assertTrue(all((config.tf32, config.fused_adam, config.compile_training, config.cuda_graph)))
+
+    def test_terrain_scan_reads_exact_tiles_in_the_yaw_frame(self):
+        scene = load_scene(ROOT / 'configs/scenes/rough_ground.yaml')
+        patch = scene['height_maps']['rough']
+        scan = TerrainHeightScan(scene)
+        positions = torch.tensor([[1.38, 0.02, 0.30], [1.38, 0.02, 0.30], [-1.0, 0.0, 0.30]])
+        yaw_90 = math.sqrt(0.5)
+        inverse_headings = torch.tensor([[1, 0, 0, 0], [yaw_90, 0, 0, -yaw_90], [1, 0, 0, 0]])
+        expected = []
+        for sample, (base_x, base_y, base_z) in enumerate(positions.tolist()):
+            local = []
+            for row in range(-3, 6):
+                for column in range(-5, 6, 2):
+                    x, y = row / 10, column / 20
+                    if sample == 1:
+                        x, y = -y, x
+                    tile_x = math.floor((base_x + x - 0.8) / 0.30)
+                    tile_y = math.floor((base_y + y + 0.6) / 0.30)
+                    height = patch['height_map_m'][tile_x][tile_y] if 0 <= tile_x < 5 and 0 <= tile_y < 4 else 0
+                    local.append(height - base_z)
+            expected.append(local)
+        torch.testing.assert_close(scan(positions, inverse_headings), torch.tensor(expected))
+
+    def test_world_model_requeries_height_at_predicted_positions(self):
+        flat = self.make_trainer()
+        self.config['scene'] = load_scene(ROOT / 'configs/scenes/rough_ground.yaml')
+        self.cfg.bootstrap_weight = 1.0
+        trainer = self.make_trainer()
+        self.assertEqual(trainer.actor.norm.mean.shape, flat.actor.norm.mean.shape)
+        self.assertEqual(trainer.critic.norm.mean.shape, flat.critic.norm.mean.shape)
+        self.assertEqual(trainer.model.net[0].in_features, flat.model.net[0].in_features + 54)
+        trainer.env.backend.position[:, 0] = 0.76
+        trainer.env.state = trainer.env.backend.read_state()
+        trainer.collect()
+        self.assertGreater(trainer.model.terrain_norm.count.item(), 1)
+        window = trainer.replay.sample_windows(2, self.cfg.model_window)
+        self.assertTrue(torch.isfinite(trainer.model.loss(window)))
+
+        # Make the model advance by one tile per imagined step.
+        trainer.model.output_norm.mean[0] = 0.30
+        positions, scans = [], []
+
+        def record_scan(module, args, output):
+            positions.append(args[0][:, 0].detach().clone())
+            scans.append(output.detach().clone())
+
+        handle = trainer.model.terrain_scan.register_forward_hook(record_scan)
+        try:
+            seed = trainer.replay.sample_starts(2)
+            objective, _, _ = imagined_rollout(trainer.env, trainer.model, trainer.actor, trainer.critic, seed, self.cfg)
+            objective.backward()
+        finally:
+            handle.remove()
+        self.assertEqual(len(positions), self.cfg.horizon)
+        torch.testing.assert_close(positions[0], seed['state'][:, 0])
+        torch.testing.assert_close(positions[1], positions[0] + 0.30)
+        self.assertFalse(torch.equal(scans[1], scans[0]))
 
     def test_replay_wrap_and_terminal_transition(self):
         b = ReplayBuffer(4, 2, 'cpu')
@@ -220,6 +279,25 @@ class SuperMimicTests(unittest.TestCase):
         torch.testing.assert_close(target.model.input_norm.mean, source.model.input_norm.mean)
         torch.testing.assert_close(target.actor.norm.mean, source.actor.norm.mean)
         self.assertFalse(target.actor_optimizer.state)
+
+    def test_flat_checkpoint_initializes_extra_terrain_inputs(self):
+        source = self.make_trainer()
+        source.collect()
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            (output / 'config.json').write_text(json.dumps(self.config))
+            source.save(output, 40)
+            self.config['scene'] = load_scene(ROOT / 'configs/scenes/rough_ground.yaml')
+            target = self.make_trainer()
+            initialize_weights(target, output / 'model_40.pt')
+        old_weight = source.model.net[0].weight
+        torch.testing.assert_close(target.model.net[0].weight[:, :old_weight.shape[1]], old_weight)
+        self.assertFalse(target.model.net[0].weight[:, -54:].any())
+        state = pack(source.env.state)
+        action = source.env.previous_action
+        features = source.env.task.model_features(source.env.state, source.env.model_context())
+        torch.testing.assert_close(target.model(state, action, action, features),
+                                   source.model(state, action, action, features))
 
     def test_official_schedule_counts_collection_and_reuses_critic_shuffle(self):
         self.cfg.collect_steps = 1

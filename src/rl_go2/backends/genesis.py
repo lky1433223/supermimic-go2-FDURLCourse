@@ -121,6 +121,11 @@ class GenesisBackend:
                                  device=self.device)
         self.robot.set_dofs_position(positions.expand(len(env_ids), -1), self.joints, envs_idx=env_ids)
 
+    def set_base_pose(self, env_ids: torch.Tensor, position: torch.Tensor, quaternion: torch.Tensor) -> None:
+        """Place reset environments at the selected terrain spawn poses."""
+        self.robot.set_pos(position, envs_idx=env_ids)
+        self.robot.set_quat(quaternion, envs_idx=env_ids)
+
     def _apply_link_point_forces(self, point_forces: LinkPointForces) -> None:
         link_quaternion = self.read_link_quaternions()
         link_position = self.robot.get_links_pos(self._link_indices)

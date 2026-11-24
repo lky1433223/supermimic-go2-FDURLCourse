@@ -150,6 +150,12 @@ class MujocoBackend:
         mujoco.mj_setConst(self.model, self.data)
         return scales.new_full((1, 1), mass)
 
+    def set_base_pose(self, env_ids: torch.Tensor, position: torch.Tensor, quaternion: torch.Tensor) -> None:
+        """Place the reset robot at the selected terrain spawn pose."""
+        self.data.qpos[:3] = position[0].cpu().numpy()
+        self.data.qpos[3:7] = quaternion[0].cpu().numpy()
+        mujoco.mj_forward(self.model, self.data)
+
     def reset(self, env_ids):
         if env_ids.numel() == 0:
             return

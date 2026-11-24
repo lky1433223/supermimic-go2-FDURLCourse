@@ -111,8 +111,12 @@ def load_scene(path: str | Path, *, entity_overrides: Mapping[str, Mapping[str, 
     doc = read_yaml(path)
     if doc.get("schema") != "rl-go2.scene/v1":
         raise ValueError("Expected schema: rl-go2.scene/v1 (Unisis-style subset)")
-    scene = doc["scene"]
-    unknown = scene.keys() - {"sim_options", "entities", "sensors"}
+    return validate_scene(doc["scene"], path, entity_overrides=entity_overrides)
+
+
+def validate_scene(scene: dict, path: Path, *, entity_overrides=None) -> dict:
+    """Validate resolved or authored scene geometry and resolve asset paths."""
+    unknown = scene.keys() - {"sim_options", "entities", "sensors", "terrain_patches", "height_maps"}
     if unknown:
         raise ValueError(f"Unsupported scene fields: {sorted(unknown)}")
     if scene.get("sensors"):
@@ -173,9 +177,17 @@ def validate_scene_robot(scene: dict, robot: dict) -> None:
 def load_experiment(path):
     path = Path(path).resolve()
     config = read_yaml(path)
-    config["scene"] = load_scene(path.parent / config["scene"])
+    robot_path = path.parent / config["robot"]
     for key in ("robot", "task"):
         config[key] = read_yaml(path.parent / config[key])
+    scene = config['scene']
+    if isinstance(scene, dict):
+        from rl_go2.training_scene import build_training_scene
+
+        scene = build_training_scene(scene, config['robot'], robot_path, config['seed'])
+        config['scene'] = validate_scene(scene, path)
+    else:
+        config['scene'] = load_scene(path.parent / scene)
     robot = config["robot"]
     validate_scene_robot(config["scene"], robot)
     names = robot["joint_names"]

@@ -10,6 +10,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from rl_go2.state import RobotState, quat_mul, rotate_inverse
+from rl_go2.trainers.terrain_features import TerrainHeightScan
 
 STATE_DIM = 37
 
@@ -113,18 +114,24 @@ class DynamicsModel(nn.Module):
     the input action to an angle target using the default angles and action
     scale. The indices above show all randomization features enabled. Disabled
     physics groups are omitted, so subsequent slices shift. The final 30
-    values are included only when link-wrench conditioning is enabled.
+    values shown above are included only when link-wrench conditioning is
+    enabled. On rough ground, 54 relative heights follow those inputs.
     """
 
-    def __init__(self, features: int, hidden: tuple[int, ...], *, wrench_links: int = 0) -> None:
+    def __init__(self, features: int, hidden: tuple[int, ...], *, wrench_links: int = 0,
+                 terrain_scan: TerrainHeightScan | None = None) -> None:
         super().__init__()
         self.wrench_links = wrench_links
         base_width = 35 + 12 + features
+        self.wrench_end = base_width + 6 * wrench_links
+        self.terrain_scan = terrain_scan
+        terrain_width = terrain_scan.size if terrain_scan is not None else 0
         self.input_norm = RunningNorm(base_width)
         # Newly introduced load features have no samples in a flat-policy checkpoint.
         self.wrench_norm = RunningNorm(6 * wrench_links) if wrench_links else None
+        self.terrain_norm = RunningNorm(terrain_width) if terrain_width else None
         self.output_norm = RunningNorm(STATE_DIM + 12)
-        self.net = mlp(base_width + 6 * wrench_links, hidden, STATE_DIM + 12)
+        self.net = mlp(self.wrench_end + terrain_width, hidden, STATE_DIM + 12)
         # Begin near the empirical average increment after statistics warmup.
         nn.init.zeros_(self.net[-1].weight)
         nn.init.zeros_(self.net[-1].bias)
@@ -142,6 +149,14 @@ class DynamicsModel(nn.Module):
         local = rotate_inverse(frame[:, None, None, :], vectors)
         return torch.cat((features, local.flatten(1)), dim=-1)
 
+    def _assemble_inputs(self, state: torch.Tensor, local: torch.Tensor, action: torch.Tensor,
+                         frame: torch.Tensor, features: torch.Tensor,
+                         wrenches_world: torch.Tensor | None) -> torch.Tensor:
+        parts = [local, action, self._heading_features(features, frame, wrenches_world)]
+        if self.terrain_scan is not None:
+            parts.append(self.terrain_scan(state[:, :3], conjugate(frame)))
+        return torch.cat(parts, dim=-1)
+
     def inputs(
         self,
         state: torch.Tensor,
@@ -154,8 +169,7 @@ class DynamicsModel(nn.Module):
         frame = heading(state[:, 3:7])
         # RobotState is Markov for the external PD controller (there is no actuator
         # delay). Feeding previous_action creates a noncausal shortcut on gait data.
-        model_features = self._heading_features(features, frame, wrenches_world)
-        return torch.cat((local_state(state, frame), action, model_features), dim=-1)
+        return self._assemble_inputs(state, local_state(state, frame), action, frame, features, wrenches_world)
 
     def targets(self, state, next_state, torque):
         frame = heading(state[:, 3:7])
@@ -174,7 +188,9 @@ class DynamicsModel(nn.Module):
         base_width = self.input_norm.mean.numel()
         self.input_norm.update(inputs[:, :base_width])
         if self.wrench_norm is not None:
-            self.wrench_norm.update(inputs[:, base_width:])
+            self.wrench_norm.update(inputs[:, base_width:self.wrench_end])
+        if self.terrain_norm is not None:
+            self.terrain_norm.update(inputs[:, self.wrench_end:])
         self.output_norm.update(self.targets(record['state'], record['next_state'], record['torque']))
 
     def forward(
@@ -188,12 +204,14 @@ class DynamicsModel(nn.Module):
         """Predict the next state and motor torque for optional per-link force/moment (N, N·m)."""
         frame = heading(state[:, 3:7])
         before = local_state(state, frame)
-        inputs = torch.cat((before, action, self._heading_features(features, frame, wrenches_world)), -1)
+        inputs = self._assemble_inputs(state, before, action, frame, features, wrenches_world)
         base_width = self.input_norm.mean.numel()
-        normalized = self.input_norm(inputs[:, :base_width])
+        normalized = [self.input_norm(inputs[:, :base_width])]
         if self.wrench_norm is not None:
-            normalized = torch.cat((normalized, self.wrench_norm(inputs[:, base_width:])), dim=-1)
-        raw = self.net(normalized)
+            normalized.append(self.wrench_norm(inputs[:, base_width:self.wrench_end]))
+        if self.terrain_norm is not None:
+            normalized.append(self.terrain_norm(inputs[:, self.wrench_end:]))
+        raw = self.net(normalized[0] if len(normalized) == 1 else torch.cat(normalized, dim=-1))
         delta = raw * self.output_norm.scale() + self.output_norm.mean
         after = before[:, 1:] + delta[:, 3:STATE_DIM]
         q = canonical_quat(quat_mul(frame, canonical_quat(after[:, :4])))

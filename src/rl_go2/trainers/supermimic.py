@@ -21,6 +21,7 @@ from rl_go2.config import FOOT_NAMES, MODEL_PARAMETER_KEYS
 from rl_go2.env import QuadrupedEnv
 from rl_go2.point_push import Go2PushGeometry, PointPushConfig, PointPushScheduler, PushState
 from rl_go2.trainers.model_learning import DynamicsModel, ReplayBuffer, RunningNorm, heading, local_state, mlp, pack, unpack
+from rl_go2.trainers.terrain_features import TerrainHeightScan
 
 OFFICIAL_REPLAY_RATIO = 16
 
@@ -342,8 +343,12 @@ class Trainer:
         ci = critic_input(state, env.previous_action, context, features)
         self.actor = Actor(env.observe().shape[-1], env.num_actions, cfg.actor_hidden,
                            env.config['robot']['action_clip']).to(env.device)
+        scene = env.config['scene']
+        terrain_scan = TerrainHeightScan(scene) if scene.get('height_maps') or scene.get('terrain_patches') or any(
+            entity['type'] == 'box' for entity in scene['entities']
+        ) else None
         self.model = DynamicsModel(features.shape[-1], cfg.model_hidden,
-                                   wrench_links=len(self.wrench_link_indices)).to(env.device)
+                                   wrench_links=len(self.wrench_link_indices), terrain_scan=terrain_scan).to(env.device)
         self.critic = Critic(ci.shape[-1], cfg.critic_hidden).to(env.device)
         push_spec = PointPushConfig.from_config(env.config)
         self.push_scheduler: PointPushScheduler | None = None

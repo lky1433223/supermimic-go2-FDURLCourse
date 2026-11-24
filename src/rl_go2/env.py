@@ -47,6 +47,14 @@ class QuadrupedEnv:
         self.previous_action = torch.zeros(self.num_envs, self.num_actions, device=self.device)
         self.environment_steps = 0
         self.record_transitions = record_transitions
+        patches = config['scene'].get('terrain_patches', [])
+        self.terrain_patches = patches
+        if patches:
+            self.terrain_generator = torch.Generator().manual_seed(config['seed'] ^ 0x53504157)
+            self.terrain_weights = torch.tensor([patch['weight'] for patch in patches])
+            self.terrain_positions = torch.tensor([patch['position'] for patch in patches], device=self.device)
+            self.terrain_rotations = torch.tensor([patch['rotation'] for patch in patches], device=self.device)
+            self.terrain_ids = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.foot_friction = None
         self.friction_bounds = None
         self.friction_switch_steps = None
@@ -136,6 +144,11 @@ class QuadrupedEnv:
             env_ids = torch.arange(self.num_envs, device=self.device)
         updates = self.curriculum.on_reset(env_ids, environment_steps=self.environment_steps, metrics=metrics or {})
         self.backend.reset(env_ids)
+        if self.terrain_patches and len(env_ids):
+            selected = torch.multinomial(self.terrain_weights, len(env_ids), replacement=True,
+                                         generator=self.terrain_generator).to(self.device)
+            self.terrain_ids[env_ids] = selected
+            self.backend.set_base_pose(env_ids, self.terrain_positions[selected], self.terrain_rotations[selected])
         if self.friction_switch_steps is not None:
             self.reset_friction_segment(env_ids)
         self.state = self.backend.read_state()

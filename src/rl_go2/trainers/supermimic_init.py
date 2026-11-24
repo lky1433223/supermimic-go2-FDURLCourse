@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 
 def initialize_weights(trainer: "Trainer", checkpoint: Path) -> None:
-    """Initialize networks and normalizers, adding zero-weight wrench inputs if needed."""
+    """Initialize networks and normalizers, adding zero-weight physics inputs if needed."""
     _validate_source_config(checkpoint, trainer.env.config)
     saved = torch.load(checkpoint, map_location=trainer.env.device, weights_only=True)
     if saved.get("schema") != "rl-go2.supermimic/v2":
@@ -24,6 +24,12 @@ def initialize_weights(trainer: "Trainer", checkpoint: Path) -> None:
     target_state = trainer.model.state_dict()
     if trainer.model.wrench_norm is not None:
         _initialize_wrench_inputs(model_state, target_state)
+    if trainer.model.terrain_norm is not None and 'terrain_norm.mean' not in model_state:
+        width = target_state['terrain_norm.mean'].numel()
+        model_state['net.0.weight'] = F.pad(model_state['net.0.weight'], (0, width))
+        for name in ('mean', 'var', 'count'):
+            key = f'terrain_norm.{name}'
+            model_state[key] = target_state[key]
     trainer.model.load_state_dict(model_state)
     trainer.actor.load_state_dict(saved["actor"])
     trainer.critic.load_state_dict(saved["critic"])
@@ -56,8 +62,12 @@ def _initialize_wrench_inputs(
     wrench_width = target_state["wrench_norm.mean"].numel()
     base_width = target_state["input_norm.mean"].numel()
     weight = model_state["net.0.weight"]
-    if weight.shape[1] == base_width:
-        model_state["net.0.weight"] = F.pad(weight, (0, wrench_width))
+    terrain = model_state.get('terrain_norm.mean')
+    terrain_width = 0 if terrain is None else terrain.numel()
+    if weight.shape[1] == base_width + terrain_width:
+        # Terrain channels follow any link-wrench channels in the first layer.
+        new_wrench_columns = weight.new_zeros(weight.shape[0], wrench_width)
+        model_state["net.0.weight"] = torch.cat((weight[:, :base_width], new_wrench_columns, weight[:, base_width:]), 1)
         for name in ("mean", "var", "count"):
             key = f"wrench_norm.{name}"
             model_state[key] = target_state[key]

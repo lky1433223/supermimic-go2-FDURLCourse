@@ -35,6 +35,9 @@ class FakeBackend:
     def reset(self, ids):
         self.position[ids] = torch.tensor([0., 0., 0.42])
 
+    def set_base_pose(self, env_ids, position, quaternion):
+        self.position[env_ids] = position
+
     def read_state(self):
         return RobotState(self.position.clone(), torch.tensor([[1., 0., 0., 0.]]).repeat(2, 1),
                           torch.zeros(2, 3), torch.zeros(2, 3), self.default.repeat(2, 1), torch.zeros(2, 12))
@@ -86,6 +89,47 @@ class ProbeTask:
 class FrameworkTests(unittest.TestCase):
     def setUp(self):
         self.config = load_experiment(ROOT / "configs/experiments/flat_ppo.yaml")
+
+    def test_training_terrain_weights_and_partial_reset(self):
+        config = load_experiment(ROOT / 'configs/experiments/terrain_supermimic_push.yaml')
+        patches = config['scene']['terrain_patches']
+        weights = {}
+        for patch in patches:
+            weights[patch['type']] = weights.get(patch['type'], 0) + patch['weight']
+        self.assertEqual(weights, dict.fromkeys(('flat', 'step', 'ramp', 'rough_ground'), 1.0))
+        config['domain_randomization'] = {}
+        env = QuadrupedEnv(config, backend=FakeBackend(config))
+        env.reset()
+        before = env.state.position[1].clone()
+        env.reset(torch.tensor([0]))
+        torch.testing.assert_close(env.state.position[1], before)
+        expected = env.terrain_positions[env.terrain_ids]
+        torch.testing.assert_close(env.state.position, expected)
+        env.reset(torch.tensor([], dtype=torch.long))
+
+    def test_terrain_scan_matches_mujoco_ramp_and_step_surfaces(self):
+        import mujoco
+        import numpy as np
+        from rl_go2.trainers.terrain_features import TerrainHeightScan
+
+        for filename, x in (('ramp.yaml', 1.53), ('single_step.yaml', 1.33)):
+            scene = load_scene(ROOT / 'configs/scenes' / filename)
+            config = {**self.config, 'scene': scene, 'backend': 'mujoco', 'device': 'cpu', 'num_envs': 1}
+            env = QuadrupedEnv(config)
+            try:
+                scan = TerrainHeightScan(scene)
+                position = torch.tensor([[x, 0.0, 0.4]], requires_grad=True)
+                values = scan(position, torch.tensor([[1., 0., 0., 0.]]))
+                for index, offset in enumerate(scan.offsets):
+                    origin = np.array([x + offset[0].item(), offset[1].item(), 1.0])
+                    distance = mujoco.mj_ray(env.backend.model, env.backend.data, origin,
+                                             np.array([0., 0., -1.]), None, True, -1,
+                                             np.zeros(1, dtype=np.int32))
+                    self.assertAlmostEqual(values[0, index].item(), 1 - distance - 0.4, places=5)
+                values.sum().backward()
+                self.assertTrue(torch.isfinite(position.grad).all())
+            finally:
+                env.close()
 
     def step_contact_config(self, backend):
         scene = load_scene(ROOT / 'configs/scenes/single_step.yaml')
