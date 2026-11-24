@@ -116,17 +116,21 @@ class Go2PushGeometry:
         self.base_half_size = torch.tensor([float(x) for x in box.attrib["size"].split()], device=device)
         self.foot_center = torch.tensor([float(x) for x in foot.attrib["pos"].split()], device=device)
         self.foot_radius = float(foot.attrib["size"])
-        self.hip_indices = tuple(robot["joint_names"].index(f"{leg}_hip_joint") for leg in feet)
-        self.thigh_indices = tuple(robot["joint_names"].index(f"{leg}_thigh_joint") for leg in feet)
-        self.calf_indices = tuple(robot["joint_names"].index(f"{leg}_calf_joint") for leg in feet)
+        # Python index sequences would create CPU tensors inside a captured rollout.
+        self.joint_indices = torch.tensor(
+            [robot["joint_names"].index(f"{leg}_{joint}_joint")
+             for leg in feet for joint in ("hip", "thigh", "calf")],
+            dtype=torch.long, device=device,
+        )
 
     def link_quaternions(self, state: RobotState) -> torch.Tensor:
         """Return authored base and calf world orientations (batch, 5, 4), wxyz."""
         # The Go2 MJCF has identity rest rotations and X/Y/Y hinge axes.
-        joints = state.joint_position
-        hip = 0.5 * joints[:, self.hip_indices]
-        knee_chain = 0.5 * (joints[:, self.thigh_indices] + joints[:, self.calf_indices])
-        hc, hs = hip.cos(), hip.sin()
+        leg_angles = state.joint_position.index_select(1, self.joint_indices).unflatten(1, (-1, 3))
+        hip, thigh, calf = leg_angles.unbind(dim=-1)
+        hip_half = 0.5 * hip
+        knee_chain = 0.5 * (thigh + calf)
+        hc, hs = hip_half.cos(), hip_half.sin()
         kc, ks = knee_chain.cos(), knee_chain.sin()
         calf_local = torch.stack((hc * kc, hs * kc, hc * ks, hs * ks), dim=-1)
         calf_world = quat_mul(state.quaternion[:, None, :], calf_local)
