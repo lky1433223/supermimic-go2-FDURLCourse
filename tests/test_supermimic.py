@@ -11,9 +11,9 @@ from unittest.mock import patch
 import torch
 
 from rl_go2.backends import LinkPointForces
-from rl_go2.config import load_experiment
+from rl_go2.config import FOOT_NAMES, load_experiment
 from rl_go2.env import QuadrupedEnv
-from rl_go2.point_push import PushState
+from rl_go2.point_push import Go2PushGeometry, PointPushConfig, PointPushScheduler, PushState
 from rl_go2.trainers.model_learning import DynamicsModel, ReplayBuffer, pack, unpack, quat_mul, conjugate
 from rl_go2.state import rotate_inverse
 from rl_go2.trainers.supermimic import Trainer, TrainConfig, imagined_rollout, frozen, lambda_returns, train
@@ -119,6 +119,29 @@ class SuperMimicTests(unittest.TestCase):
 
     def test_scheduled_pushes_continue_in_imagination_and_reset(self):
         self.check_scheduled_pushes('mujoco')
+
+    def test_random_push_duration_is_preserved_in_replay(self):
+        config = load_experiment(ROOT / 'configs/experiments/flat_supermimic_push.yaml')
+        push = config['domain_randomization']['point_push']
+        push.update(first_wait_seconds=[0, 0], gap_seconds=[1, 1], no_push_episode_probability=0)
+        spec = PointPushConfig.from_config(config)
+        geometry = Go2PushGeometry(config, FOOT_NAMES, torch.device('cpu'))
+        scheduler = PointPushScheduler(spec, 0.02, geometry)
+        state = scheduler.reset(torch.zeros(128, 3))
+        link_quat = torch.zeros(128, 5, 4)
+        link_quat[..., 0] = 1
+        state = scheduler.prepare(state, link_quat)
+        state = PushState.from_replay(state.replay_fields())
+        expected = state.duration_steps
+        self.assertEqual(expected.min().item(), 5)
+        self.assertEqual(expected.max().item(), 15)
+        torch.testing.assert_close(state.wait, expected + 50)
+
+        active_steps = torch.zeros_like(expected)
+        for _ in range(16):
+            active_steps += scheduler.loads(state).force_world_n.ne(0).any(dim=(1, 2))
+            state = scheduler.prepare(scheduler.advance(state), link_quat)
+        torch.testing.assert_close(active_steps, expected)
 
     @unittest.skipUnless(os.environ.get('RL_GO2_TEST_GENESIS') == '1', 'opt-in Genesis CPU kernel compilation')
     def test_genesis_scheduled_pushes_continue_in_imagination_and_reset(self):
