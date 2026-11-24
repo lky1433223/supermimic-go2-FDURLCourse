@@ -101,6 +101,9 @@ def summarize_plan(config: dict, plan: EvaluationPlan, results: list[dict]) -> d
             counts = report['by_scene'][row['scene']]
             counts['trials'] += 1
             counts['falls'] += int(row['fell'])
+            if 'success' in row:
+                counts['successes'] = counts.get('successes', 0) + int(row['success'])
+                counts['failures'] = counts.get('failures', 0) + int(not row['success'])
     if all(trial.continue_after_reset for trial in plan.trials):
         report.update(device=config['device'], num_envs=config['num_envs'])
     return report

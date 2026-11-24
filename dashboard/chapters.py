@@ -40,6 +40,12 @@ def trial_chapters(report: dict, metadata: dict) -> list[dict]:
             'recovered': '已恢复', 'not_recovered': '未恢复',
             'fell_after_push_onset': '受推后摔倒', 'fell_before_push': '受推前摔倒',
         }
+        success = row.get('success')
+        result = labels.get(outcome, '摔倒' if fell else '完成')
+        if success is True:
+            result = '通过'
+        elif success is False and not fell:
+            result = '失败'
         start = frame_offset / fps
         minutes, remainder = divmod(start, 60)
         chapters.append({
@@ -47,7 +53,7 @@ def trial_chapters(report: dict, metadata: dict) -> list[dict]:
             'time': f'{int(minutes):02d}:{remainder:05.2f}',
             'seed': row.get('seed', '—'), 'condition': row.get('condition', ''),
             'motion': row.get('case', ''), 'fell': fell,
-            'result': labels.get(outcome, '摔倒' if fell else '完成'),
+            'failed': fell or success is False, 'result': result,
         })
         frame_offset += frame_count
     return chapters

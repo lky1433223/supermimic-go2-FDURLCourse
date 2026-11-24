@@ -1,13 +1,16 @@
 {% extends "base.jinja" %}
 {% macro counts(title, groups) %}
 {% if groups is mapping and groups %}
+{% set show_success = groups.values() | select('mapping') | selectattr('successes', 'defined') | list %}
 <div class="table-wrap">
   <table>
     <caption>{{ title }}</caption>
-    <thead><tr><th>名称</th><th>试次</th><th>摔倒</th></tr></thead>
+    <thead><tr><th>名称</th><th>试次</th><th>摔倒</th>{% if show_success %}<th>通过</th><th>失败</th>{% endif %}</tr></thead>
     <tbody>
       {% for name, row in groups.items() if row is mapping %}
-      <tr><td>{{ name }}</td><td>{{ row.get('trials', '—') }}</td><td>{{ row.get('falls', '—') }}</td></tr>
+      <tr><td>{{ name }}</td><td>{{ row.get('trials', '—') }}</td><td>{{ row.get('falls', '—') }}</td>
+        {% if show_success %}<td>{{ row.get('successes', '—') }}</td><td>{{ row.get('failures', '—') }}</td>{% endif %}
+      </tr>
       {% endfor %}
     </tbody>
   </table>
@@ -72,7 +75,7 @@
                 <td><button type="button" data-chapter-start="{{ chapter.start }}" aria-label="播放第 {{ chapter.number }} 次测试">第 {{ chapter.number }} 次 · {{ chapter.time }}</button></td>
                 <td>{{ chapter.seed }}</td>
                 <td>{{ chapter.condition }}<span class="subline">{{ chapter.motion }}</span></td>
-                <td{% if chapter.fell %} class="warning"{% endif %}>{{ chapter.result }}</td>
+                <td{% if chapter.failed %} class="warning"{% endif %}>{{ chapter.result }}</td>
               </tr>
               {% endfor %}
             </tbody>

@@ -126,7 +126,9 @@ python scripts/evaluate.py --task point-push --run-dir <训练目录> \
 
 `python scripts/evaluate.py --task terrain --run-dir <训练目录>` 用同一策略和标称物理工况在平地、2/4/6 cm 台阶、5°/10° 缓坡和两张随机不平整地面上执行 8 秒直行。
 可加 `--backend genesis` 用同一套件检查 Genesis。`eval-config.json` 的 `scenes` 记录解析后的碰撞几何和机器人出生位姿，
-`summary.json` 按场景汇总试次与摔倒次数。各场景的报告和可选录像保存在 `<场景>/<工况>/`。
+`summary.json` 按场景汇总通过、失败及摔倒次数。各场景的报告和可选录像保存在 `<场景>/<工况>/`。
+通过要求全程未摔倒，且去掉前 2 秒后的前进速度 MSE 不超过 0.04 (m/s)²（RMSE 0.20 m/s）。
+逐项报告记录失败原因、最大倾角和前进位移。
 
 `configs/scenes/flat.yaml` 使用单个平面，`configs/scenes/single_step.yaml` 在平面上增加一个固定箱体。
 台阶的 `height_m` 按米配置。调整高度时，箱体前沿和底面位置固定。

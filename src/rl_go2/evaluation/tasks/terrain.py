@@ -3,6 +3,7 @@
 from rl_go2.config import FLAT_SCENE_PATH
 
 from ..conditions import NOMINAL_SAMPLE, NOMINAL_SLIDING
+from ..metrics import TERRAIN_SUCCESS_CRITERIA
 from ..motion_tasks import MotionTask
 from ..task import EvaluationGroup, EvaluationTask, SceneSpec
 
@@ -33,8 +34,11 @@ class TerrainTask(EvaluationTask):
             motions=(MotionTask('forward_0.5', 0.5, duration_seconds=8),),
         ),
     )
-    metrics = 'tracking'
-    report = {'velocity_axes': ['vx', 'vy', 'yaw_rate'], 'case_seconds': 8}
+    metrics = 'terrain'
+    report = {
+        'velocity_axes': ['vx', 'vy', 'yaw_rate'], 'case_seconds': 8,
+        'success_criteria': TERRAIN_SUCCESS_CRITERIA,
+    }
     episode_seconds = 8
     continue_after_reset = False
     reset_before_start = True

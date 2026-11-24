@@ -144,6 +144,46 @@ class TrackingMetrics(TrialMetrics):
         }
 
 
+TERRAIN_SUCCESS_CRITERIA = {
+    'max_forward_velocity_mse_after_2s_m2_s2': 0.04,
+}
+
+
+class TerrainMetrics(TrackingMetrics):
+    """Judge terrain tracking and report motion and posture diagnostics."""
+
+    def __init__(self, env, trial):
+        super().__init__(env, trial)
+        self.quaternions = []
+
+    def update(self, env, transition, reward, done, observation, step):
+        super().update(env, transition, reward, done, observation, step)
+        self.quaternions.append(transition.next_state.quaternion[0])
+
+    def finish(self, env):
+        result = super().finish(env)
+        rmse = result['velocity_rmse_after_2s']
+        mse = rmse[0] ** 2 if rmse is not None else None
+        final_x = self.positions[-1][0].item()
+        reasons = []
+        if result['fell']:
+            reasons.append('fall')
+        if mse is None:
+            reasons.append('insufficient_tracking_samples')
+        elif mse > TERRAIN_SUCCESS_CRITERIA['max_forward_velocity_mse_after_2s_m2_s2']:
+            reasons.append('tracking_mse')
+        roll_pitch = torch.stack(self.quaternions)[:, 1:3]
+        upright = (1 - 2 * roll_pitch.square().sum(dim=1)).clamp(-1, 1)
+        result.update(
+            success=not reasons, failure_reasons=reasons,
+            forward_velocity_mse_after_2s_m2_s2=mse,
+            final_x_m=final_x,
+            forward_displacement_m=final_x - self.positions[0][0].item(),
+            peak_tilt_deg=math.degrees(math.acos(upright.min().item())),
+        )
+        return result
+
+
 class FrictionMetrics(TrackingMetrics):
     def __init__(self, env, trial):
         import mujoco
@@ -210,4 +250,7 @@ class RolloutMetrics(TrialMetrics):
                 'mean_total_reward': self.total_reward, 'episode_resets': self.resets, 'policy_updates': 0}
 
 
-METRICS = {'tracking': TrackingMetrics, 'friction': FrictionMetrics, 'rollout': RolloutMetrics}
+METRICS = {
+    'tracking': TrackingMetrics, 'terrain': TerrainMetrics,
+    'friction': FrictionMetrics, 'rollout': RolloutMetrics,
+}

@@ -11,6 +11,7 @@ import torch
 from rl_go2.evaluation.push_events import sample_event
 from rl_go2.evaluation.conditions import EvaluationCondition, PHYSICAL_SAMPLES, PhysicalSample
 from rl_go2.evaluation.executor import execute_plan, execute_trial
+from rl_go2.evaluation.metrics import TerrainMetrics
 from rl_go2.evaluation.motion_tasks import MotionTask
 from rl_go2.evaluation.runner import configure_evaluation_scene, output_records
 from rl_go2.evaluation.task import Trial
@@ -36,6 +37,38 @@ class ResettingEnvironment:
 
 
 class EvaluationTests(unittest.TestCase):
+    def test_terrain_tracking_failure_is_distinct_from_falling(self):
+        plan = TASKS['terrain'].build_plan()
+        trial = next(trial for trial in plan.trials if trial.scene == 'step-4cm')
+        for final_x, vx, reasons in (
+            (0.5, 0.5, []),
+            (2.0, 0.0, ['tracking_mse']),
+        ):
+            with self.subTest(final_x=final_x, vx=vx):
+                env = SimpleNamespace(
+                    dt=1.0,
+                    state=SimpleNamespace(position=torch.zeros(1, 3)),
+                    task=SimpleNamespace(body_state=lambda state: (state.velocity, torch.zeros(1, 3), None)),
+                    foot_friction=None, base_mass_kg=None, base_com_offset_m=None,
+                )
+                metrics = TerrainMetrics(env, trial)
+                for step in range(8):
+                    state = SimpleNamespace(
+                        position=torch.tensor([[final_x * (step + 1) / 8, 0, 0.3]]),
+                        quaternion=torch.tensor([[1., 0., 0., 0.]]),
+                        velocity=torch.tensor([[vx, 0, 0]]),
+                    )
+                    transition = SimpleNamespace(
+                        next_state=state, terminated=torch.tensor([False]),
+                        context={'commands': torch.tensor([[0.5, 0, 0]])},
+                    )
+                    metrics.update(env, transition, None, None, None, step)
+                result = metrics.finish(env)
+                self.assertFalse(result['fell'])
+                self.assertEqual(result['success'], not reasons)
+                self.assertEqual(result['failure_reasons'], reasons)
+                self.assertAlmostEqual(result['forward_velocity_mse_after_2s_m2_s2'], (0.5 - vx) ** 2)
+
     def test_select_point_push_conditions_and_trial(self):
         task = TASKS['point-push']
         plan = task.build_plan()
