@@ -441,13 +441,13 @@ Context 为固定键集合的小型张量字典，replay 自动保存；地形�
 
 ### 交互式策略推理
 
-`play.py` 持续运行单个机器人的策略推理，默认 1 倍真实时间。浏览器控制面板
-接收键盘输入，引擎原生 3D 窗口用于鼠标调整视角。保持浏览器面板在前台操作，
-切换窗口或超过 0.6 秒没有输入心跳时清空移动按键。
+`play.py` 持续运行单个机器人的策略推理，默认 1 倍真实时间。
+聚焦仿真窗口即可接收键盘输入，窗口内 HUD 显示速度和状态，失焦清空移动按键。
+MuJoCo 使用官方渲染 API 和 GLFW 窗口接收完整的按下/松开事件，Genesis 使用原生 Viewer 插件。
 
 ```bash
-# macOS 上 MuJoCo 使用 mjpython，Linux 可使用 python。
-uv run --extra train mjpython scripts/play.py --backend mujoco \
+# play.py 的原生窗口在主线程创建，两个后端均使用普通 python。
+uv run --extra train python scripts/play.py --backend mujoco \
   --run-dir output/<训练目录> --iteration <权重轮次>
 uv run --extra train python scripts/play.py --backend genesis \
   --run-dir output/<训练目录> --iteration <权重轮次>
@@ -456,7 +456,8 @@ uv run --extra train python scripts/play.py --backend genesis \
 W/S 按住前进/后退，A/D 按住左转/右转，支持组合键。↑/↓ 每次增减
 0.1 m/s 步速，←/→ 每次减增 0.1 rad/s 转速。Space 清空移动指令，
 P 暂停/继续，R 重置机器人，Esc 退出。指令以 0.15 秒时间常数平滑变化，
-停止指令时策略继续执行。面板显示速度档位、当前指令、机体坐标系实际速度和训练范围。
+停止指令时策略继续执行。窗口内 HUD 显示速度档位、当前指令、机体坐标系实际速度和训练范围。
+HUD 使用英文，鼠标左键拖动旋转视角、右键拖动平移、滚轮缩放。
 线速度和角速度档位上限采用对应训练范围端点的最大绝对值，允许正反向操作，
 训练未覆盖的方向（例如仅前进训练后的后退）效果需要实际观察。
 
@@ -464,4 +465,4 @@ P 暂停/继续，R 重置机器人，Esc 退出。指令以 0.15 秒时间常�
 可用 `--checkpoint` 加载 SuperMimic checkpoint，或 `--policy` 指定导出策略。
 跨机器的失效资源路径会按仓库 `assets/` 路径重新定位，源配置保持原样。
 物理条件固定为标称质量、零质心偏移和四脚 0.8 滑动摩擦。跌倒后自动重置并清空指令。
-`--steps` 可限制交互短跑步数，`--no-browser` 只打印面板地址。
+`--steps` 可限制交互短跑步数。

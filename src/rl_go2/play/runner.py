@@ -3,7 +3,6 @@ import argparse
 import json
 from pathlib import Path
 import time
-import webbrowser
 
 import torch
 
@@ -12,7 +11,7 @@ from rl_go2.evaluation.conditions import NOMINAL_SAMPLE, NOMINAL_SLIDING
 from rl_go2.evaluation.runner import load_policy
 from rl_go2.state import rotate_inverse
 from .controls import Controls
-from .panel import serve_panel
+from .viewer import PlayViewer, create_viewer
 
 
 def load_inputs(args: argparse.Namespace) -> tuple[dict, torch.nn.Module, Path]:
@@ -37,6 +36,17 @@ def load_inputs(args: argparse.Namespace) -> tuple[dict, torch.nn.Module, Path]:
         entity['file'] = str(local)
     config.update(backend=args.backend, device=args.device, num_envs=1,
                   curriculum={'name': 'none'}, seed=args.seed)
+    config['viewer_options'] = {'enable_help_text': False, 'enable_default_keybinds': False}
+    config['vis_options'] = {
+        'ambient_light': (0.35, 0.35, 0.35),
+        'background_color': (0.18, 0.22, 0.27),
+        'lights': [
+            {'type': 'directional', 'dir': (-1, -1, -2),
+             'color': (1.0, 0.97, 0.93), 'intensity': 4.0},
+            {'type': 'directional', 'dir': (1, 1, -1),
+             'color': (0.88, 0.94, 1.0), 'intensity': 2.5},
+        ],
+    }
     config = NOMINAL_SAMPLE.condition('nominal', NOMINAL_SLIDING).apply(config)
     # Interactive commands are supplied every step. Keep the task's periodic
     # sampling from replacing the command during a step or normal timeout.
@@ -49,30 +59,15 @@ def load_inputs(args: argparse.Namespace) -> tuple[dict, torch.nn.Module, Path]:
     return config, policy, path
 
 
-def refresh_viewer(env: QuadrupedEnv, backend: str) -> bool:
-    """Service window events while paused and report whether it is still open."""
-    if backend == 'mujoco':
-        viewer = env.backend.viewer
-        if not viewer.is_running():
-            return False
-        viewer.sync()
-        return viewer.is_running()
-    viewer = env.backend.scene.viewer
-    if not viewer.is_alive():
-        return False
-    viewer.update()
-    return viewer.is_alive()
-
-
 def run_loop(env: QuadrupedEnv, policy: torch.nn.Module, controls: Controls,
-             backend: str, steps: int | None) -> None:
+             viewer: PlayViewer, steps: int | None) -> None:
     """Advance at most real-time and smooth body-frame velocity changes over 0.15 s."""
     command = torch.zeros(1, 3, device=env.device)
     count = 0
     deadline = time.monotonic()
     with torch.no_grad():
         while steps is None or count < steps:
-            if not refresh_viewer(env, backend):
+            if not viewer.refresh():
                 break
             target, paused, stopped, reset = controls.sample()
             if stopped:
@@ -80,7 +75,7 @@ def run_loop(env: QuadrupedEnv, policy: torch.nn.Module, controls: Controls,
             if reset:
                 env.reset()
                 command.zero_()
-                controls.receive([], 'stop')
+                controls.clear_keys()
                 target = [0.0, 0.0, 0.0]
             if paused:
                 command.zero_()
@@ -94,7 +89,7 @@ def run_loop(env: QuadrupedEnv, policy: torch.nn.Module, controls: Controls,
             env.task.commands.copy_(command)
             _, _, done, _ = env.step(policy(env.observe()))
             if bool(done.any()):
-                controls.receive([], 'stop')
+                controls.clear_keys()
                 command.zero_()
                 env.task.commands.zero_()
             count += 1
@@ -120,7 +115,6 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument('--iteration', type=int)
     parser.add_argument('--seed', type=int, default=1)
     parser.add_argument('--steps', type=int, help='Optional finite interactive smoke run')
-    parser.add_argument('--no-browser', action='store_true', help='Print panel URL without opening it')
     args = parser.parse_args(argv)
     if args.backend == 'mujoco' and args.device != 'cpu':
         parser.error('MuJoCo requires --device cpu')
@@ -134,17 +128,19 @@ def main(argv: list[str] | None = None) -> None:
                         max_yaw=max(abs(v) for v in ranges[2]))
     controls.publish(backend=args.backend, policy=f'{args.run_dir.name} / {path.name}',
                      training_ranges=ranges)
-    env = QuadrupedEnv(config, viewer=True)
+    env = QuadrupedEnv(config, viewer=args.backend == 'genesis')
+    viewer = None
     try:
         policy = policy.to(env.device)
-        with serve_panel(controls) as url:
-            print(f'Keyboard control panel: {url}', flush=True)
-            print('Focus the browser panel for WASD. Close the 3D window or press Esc to exit.', flush=True)
-            if not args.no_browser:
-                webbrowser.open(url)
-            run_loop(env, policy, controls, args.backend, args.steps)
+        viewer = create_viewer(env, controls, args.backend)
+        print('Focus the simulation window for WASD and the in-window HUD.', flush=True)
+        run_loop(env, policy, controls, viewer, args.steps)
     except KeyboardInterrupt:
         pass
     finally:
-        controls.receive([], 'quit')
-        env.close()
+        controls.key_event('quit', True)
+        try:
+            if viewer is not None:
+                viewer.close()
+        finally:
+            env.close()

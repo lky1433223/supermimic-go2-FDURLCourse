@@ -1,1 +1,1 @@
-"""Interactive policy playback with a local keyboard control panel."""
+"""Interactive policy playback with native keyboard controls and HUDs."""

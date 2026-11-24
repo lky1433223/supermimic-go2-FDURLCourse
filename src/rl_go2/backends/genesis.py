@@ -29,6 +29,8 @@ class GenesisBackend:
                 batch_links_info=com_enabled or base_mass_scale_range(config) is not None,
             ),
             show_viewer=viewer,
+            viewer_options=gs.options.ViewerOptions(**config.get('viewer_options', {})),
+            vis_options=gs.options.VisOptions(**config.get('vis_options', {})),
         )
         friction_enabled = foot_friction_ranges(config) is not None
         planes = []
