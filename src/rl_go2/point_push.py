@@ -116,17 +116,21 @@ class Go2PushGeometry:
         self.base_half_size = torch.tensor([float(x) for x in box.attrib["size"].split()], device=device)
         self.foot_center = torch.tensor([float(x) for x in foot.attrib["pos"].split()], device=device)
         self.foot_radius = float(foot.attrib["size"])
-        self.hip_indices = tuple(robot["joint_names"].index(f"{leg}_hip_joint") for leg in feet)
-        self.thigh_indices = tuple(robot["joint_names"].index(f"{leg}_thigh_joint") for leg in feet)
-        self.calf_indices = tuple(robot["joint_names"].index(f"{leg}_calf_joint") for leg in feet)
+        # Python index sequences would create CPU tensors inside a captured rollout.
+        self.joint_indices = torch.tensor(
+            [robot["joint_names"].index(f"{leg}_{joint}_joint")
+             for leg in feet for joint in ("hip", "thigh", "calf")],
+            dtype=torch.long, device=device,
+        )
 
     def link_quaternions(self, state: RobotState) -> torch.Tensor:
         """Return authored base and calf world orientations (batch, 5, 4), wxyz."""
         # The Go2 MJCF has identity rest rotations and X/Y/Y hinge axes.
-        joints = state.joint_position
-        hip = 0.5 * joints[:, self.hip_indices]
-        knee_chain = 0.5 * (joints[:, self.thigh_indices] + joints[:, self.calf_indices])
-        hc, hs = hip.cos(), hip.sin()
+        leg_angles = state.joint_position.index_select(1, self.joint_indices).unflatten(1, (-1, 3))
+        hip, thigh, calf = leg_angles.unbind(dim=-1)
+        hip_half = 0.5 * hip
+        knee_chain = 0.5 * (thigh + calf)
+        hc, hs = hip_half.cos(), hip_half.sin()
         kc, ks = knee_chain.cos(), knee_chain.sin()
         calf_local = torch.stack((hc * kc, hs * kc, hc * ks, hs * ks), dim=-1)
         calf_world = quat_mul(state.quaternion[:, None, :], calf_local)
@@ -159,6 +163,8 @@ class PointPushScheduler:
         self.first_wait = tuple(round(seconds / dt) for seconds in spec.first_wait)
         self.gap = tuple(round(seconds / dt) for seconds in spec.gap)
         self.idle = -self.duration
+        foot_probability = (1 - spec.base_probability) / 4
+        self.link_weights = geometry.base_half_size.new_tensor([spec.base_probability, *([foot_probability] * 4)])
         if spec.overlap_probability and spec.overlap_delay[1] >= self.duration:
             raise ValueError("point_push overlap delay must be shorter than the push duration")
 
@@ -174,8 +180,7 @@ class PointPushScheduler:
     def _schedule_group(self, state: PushState) -> tuple[torch.Tensor, torch.Tensor]:
         due = state.wait == 0
         device = state.wait.device
-        weights = state.forces.new_full((5,), (1 - self.spec.base_probability) / 4)
-        weights[0] = self.spec.base_probability
+        weights = self.link_weights
         primary = self._sample_link(weights.expand(state.wait.shape[0], -1))
         delay = torch.full_like(state.delay, self.idle).scatter(1, primary, 0)
         extra = torch.zeros_like(state.wait)
