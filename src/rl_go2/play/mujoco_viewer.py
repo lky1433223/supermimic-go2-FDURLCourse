@@ -9,6 +9,7 @@ import mujoco
 import numpy as np
 
 from rl_go2.backends.mujoco import MujocoBackend
+from rl_go2.mujoco_visuals import brighten_scene
 from .controls import Controls
 from .hud import MARGIN, PANEL, WIDTH, layout_hud
 
@@ -16,12 +17,8 @@ from .hud import MARGIN, PANEL, WIDTH, layout_hud
 def playback_model(model: mujoco.MjModel) -> mujoco.MjModel:
     """Make a render-only copy with the brighter evaluation-video lighting."""
     visual = copy(model)
-    visual.vis.headlight.active = 1
-    visual.vis.headlight.ambient[:] = (0.6, 0.6, 0.6)
-    visual.vis.headlight.diffuse[:] = (0.7, 0.7, 0.7)
+    brighten_scene(visual)
     visual.vis.headlight.specular[:] = (0.2, 0.2, 0.2)
-    planes = visual.geom_type == mujoco.mjtGeom.mjGEOM_PLANE
-    visual.geom_rgba[planes] = (0.75, 0.78, 0.8, 1.0)
     return visual
 
 

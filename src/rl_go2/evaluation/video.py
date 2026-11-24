@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from rl_go2.config import FOOT_NAMES
+from rl_go2.mujoco_visuals import brighten_scene
 
 
 # MuJoCo measures azimuth along the viewing direction, toward the robot.
@@ -134,10 +135,8 @@ class EvaluationVideo:
             self.renderer_resources.close()
             # Keep video lighting and appearance on a separate model.
             self.model = copy(backend.model)
-            self.model.vis.headlight.ambient[:] = (0.6, 0.6, 0.6)
-            self.model.vis.headlight.diffuse[:] = (0.7, 0.7, 0.7)
+            brighten_scene(self.model)
             planes = self.model.geom_type == self.mujoco.mjtGeom.mjGEOM_PLANE
-            self.model.geom_rgba[planes] = (0.75, 0.78, 0.8, 1.0)
             self.ground_id = next(iter(np.flatnonzero(planes)), None)
             self.renderer = self.renderer_resources.enter_context(
                 self.mujoco.Renderer(self.model, height=self.height, width=self.width)

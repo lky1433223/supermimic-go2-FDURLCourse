@@ -11,6 +11,7 @@ import torch
 
 from rl_go2.backends import LinkPointForces
 from rl_go2.config import FOOT_NAMES, foot_friction_ranges
+from rl_go2.mujoco_visuals import brighten_scene
 from rl_go2.state import RobotState
 
 if TYPE_CHECKING:
@@ -102,7 +103,20 @@ class MujocoBackend:
         self._interactive_force_callback: Callable[[mujoco.MjModel, mujoco.MjData], None] | None = None
         self.reset(torch.tensor([0]))
         if viewer:
-            self.viewer = _launch_passive_viewer(self.model, self.data)
+            self._open_viewer()
+
+    def _open_viewer(self) -> None:
+        """Start the passive window with a lit scene and a torso-tracking camera."""
+        brighten_scene(self.model)
+        self.viewer = _launch_passive_viewer(self.model, self.data)
+        with self.viewer.lock():
+            camera = self.viewer.cam
+            camera.type = mujoco.mjtCamera.mjCAMERA_TRACKING
+            camera.trackbodyid = self.base
+            camera.lookat[:] = self.data.subtree_com[self.base]
+            camera.distance = 2.4
+            camera.azimuth = 115
+            camera.elevation = -22
 
     def read_state(self):
         velocity = np.zeros(6)

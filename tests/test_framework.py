@@ -1,4 +1,5 @@
 """Control, reset boundaries and policy export checks; no training."""
+from contextlib import nullcontext
 from copy import deepcopy
 import math
 from pathlib import Path
@@ -6,7 +7,7 @@ import os
 import json
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import torch
 
@@ -183,6 +184,26 @@ class FrameworkTests(unittest.TestCase):
             self.assertIs(_launch_passive_viewer(None, None), handle)
         self.assertEqual(launch.call_count, 2)
         sleep.assert_called_once()
+
+    def test_mujoco_viewer_starts_lit_and_tracks_the_robot(self):
+        import mujoco
+        import numpy as np
+
+        handle = Mock(cam=mujoco.MjvCamera())
+        handle.lock.return_value = nullcontext()
+        config = {**self.config, 'backend': 'mujoco', 'device': 'cpu', 'num_envs': 1}
+        with patch('rl_go2.backends.mujoco._launch_passive_viewer', return_value=handle):
+            env = QuadrupedEnv(config, viewer=True)
+        try:
+            backend = env.backend
+            self.assertEqual(handle.cam.type, mujoco.mjtCamera.mjCAMERA_TRACKING)
+            self.assertEqual(handle.cam.trackbodyid, backend.base)
+            np.testing.assert_allclose(handle.cam.lookat, backend.data.subtree_com[backend.base])
+            np.testing.assert_allclose(backend.model.vis.headlight.ambient, [0.6, 0.6, 0.6])
+            np.testing.assert_allclose(backend.model.geom('ground').rgba, [0.75, 0.78, 0.8, 1])
+            handle.lock.assert_called_once()
+        finally:
+            env.close()
 
     @unittest.skipUnless(os.environ.get('RL_GO2_TEST_GENESIS') == '1', 'opt-in Genesis CPU kernel compilation')
     def test_genesis_step_is_in_randomized_foot_contact_surfaces(self):
