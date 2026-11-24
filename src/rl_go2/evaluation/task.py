@@ -1,6 +1,6 @@
 """Declarative contract shared by evaluation tasks."""
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import math
 from pathlib import Path
 
@@ -55,6 +55,32 @@ class EvaluationPlan:
     report: dict
     episode_seconds: float
     scenes: dict[str, dict] = field(default_factory=dict)
+
+    def select_trials(
+        self, *, conditions: list[str] | None = None, motions: list[str] | None = None
+    ) -> 'EvaluationPlan':
+        """Filter by declared names while preserving execution order."""
+        if conditions is None and motions is None:
+            return self
+        condition_names = set(conditions or ())
+        motion_names = set(motions or ())
+        unknown_conditions = condition_names - {trial.condition.name for trial in self.trials}
+        unknown_motions = motion_names - {trial.name for trial in self.trials}
+        if unknown_conditions:
+            raise ValueError(f'Unknown condition names: {", ".join(sorted(unknown_conditions))}')
+        if unknown_motions:
+            raise ValueError(f'Unknown trial motion names: {", ".join(sorted(unknown_motions))}')
+        selected = tuple(
+            trial for trial in self.trials
+            if (not condition_names or trial.condition.name in condition_names)
+            and (not motion_names or trial.name in motion_names)
+        )
+        if not selected:
+            raise ValueError('No trials match the selected conditions and motions')
+        scene_names = {trial.scene for trial in selected}
+        return replace(self, trials=selected, scenes={
+            name: scene for name, scene in self.scenes.items() if name in scene_names
+        })
 
     def scene_config(self, config: dict, trial: Trial) -> dict:
         """Select the resolved scene, falling back to the training configuration."""

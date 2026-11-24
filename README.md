@@ -114,6 +114,14 @@ Z 轴 ±1 cm，以及三轴同时偏移 (+3, +3, +1) cm。每个种子跑 84 项
 同一受力部位的不同力度和时长复用对应试次的施力连杆、局部落点和世界系方向。
 `eval-config.json` 保存实际点力事件，报告按工况统计摔倒及恢复结果。恢复时间从撤力到满足 0.5 秒稳定判据为止。
 
+用 `--condition` 按工况名筛选，用 `--trial` 按动作名进一步筛选。评测报告和可选录像只包含选中的试次。
+下面的命令只用种子 1 录制 80 N 短推下的慢速直行。去掉 `--trial` 和 `--seeds` 就会覆盖所选工况下的全部动作和默认种子。
+
+```bash
+python scripts/evaluate.py --task point-push --run-dir <训练目录> \
+  --condition base-80n-short --trial vx0.2_yaw0 --seeds 1 --video
+```
+
 ### 地形场景对照
 
 `python scripts/evaluate.py --task terrain --run-dir <训练目录>` 用同一策略和标称物理工况在平地、2/4/6 cm 台阶和 5°/10° 缓坡上执行 8 秒直行。

@@ -1,6 +1,7 @@
 """Evaluation plan composition and automatic-reset execution boundaries."""
 from contextlib import contextmanager
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -35,6 +36,22 @@ class ResettingEnvironment:
 
 
 class EvaluationTests(unittest.TestCase):
+    def test_select_point_push_conditions_and_trial(self):
+        task = TASKS['point-push']
+        plan = task.build_plan()
+        short_pushes = plan.select_trials(conditions=['base-80n', 'base-80n-short'])
+        self.assertEqual(len(short_pushes.trials) * len(task.default_seeds), 36)
+        one_trial = plan.select_trials(conditions=['base-80n-short'], motions=['vx0.2_yaw0'])
+        self.assertEqual(
+            [(trial.condition.name, trial.name) for trial in one_trial.trials],
+            [('base-80n-short', 'vx0.2_yaw0')],
+        )
+        self.assertEqual(output_records(one_trial, 'base-80n-short'), {Path('base-80n-short'): one_trial})
+        with self.assertRaisesRegex(ValueError, 'Unknown condition names: missing'):
+            plan.select_trials(conditions=['base-80n', 'missing'])
+        with self.assertRaisesRegex(ValueError, 'Unknown trial motion names: missing'):
+            plan.select_trials(motions=['missing'])
+
     def test_legacy_suites_default_to_flat_for_a_step_training_run(self):
         terrain_plan = TASKS['terrain'].build_plan()
         step_scene = terrain_plan.scenes['step-6cm']

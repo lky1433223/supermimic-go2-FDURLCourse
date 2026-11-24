@@ -11,6 +11,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description='Evaluate a saved Go2 policy.')
     parser.add_argument('--list-tasks', action='store_true', help='List evaluation tasks and exit')
     parser.add_argument('--task', choices=TASKS, help='Evaluation task (default: standard)')
+    parser.add_argument('--condition', nargs='+', help='Run only the named physical conditions')
+    parser.add_argument('--trial', nargs='+', help='Run only trials with the named motions')
     parser.add_argument('--run-dir', type=Path, help='Training directory (required for evaluations)')
     weights = parser.add_mutually_exclusive_group()
     weights.add_argument('--checkpoint', type=Path, help='SuperMimic model checkpoint')

@@ -90,6 +90,7 @@ def run_evaluation(args, task):
     config = json.loads(config_path.read_text())
     config.update(backend=args.backend, device=args.device, num_envs=args.num_envs, curriculum={'name': 'none'})
     plan = task.build_plan(args.steps)
+    plan = plan.select_trials(conditions=args.condition, motions=args.trial)
     config = configure_evaluation_scene(config, plan)
     conditions = tuple({trial.condition.name: trial.condition for trial in plan.trials}.values())
     condition_name = conditions[0].name if len(conditions) == 1 else 'comparison'
