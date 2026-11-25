@@ -18,6 +18,7 @@ from rl_go2.point_push import Go2PushGeometry, PointPushConfig, PointPushSchedul
 from rl_go2.trainers.model_learning import DynamicsModel, ReplayBuffer, pack, unpack, quat_mul, conjugate
 from rl_go2.state import rotate_inverse
 from rl_go2.tasks.flat_walk import FlatWalkTask
+from rl_go2.trainers.cuda_startup import reserve_startup_memory
 from rl_go2.trainers.supermimic import Trainer, TrainConfig, imagined_rollout, frozen, lambda_returns, train
 from rl_go2.trainers.supermimic_init import initialize_weights
 from rl_go2.trainers.terrain_features import TerrainHeightScan
@@ -42,6 +43,23 @@ class SuperMimicTests(unittest.TestCase):
     def test_cuda_acceleration_defaults(self):
         config = TrainConfig()
         self.assertTrue(all((config.tf32, config.fused_adam, config.compile_training, config.cuda_graph)))
+
+    def test_startup_reservation_releases_once_and_rejects_insufficient_memory(self):
+        gib = 1024 ** 3
+        with patch('torch.cuda.current_device', return_value=0), \
+                patch('torch.cuda.mem_get_info', return_value=(78 * gib, 80 * gib)) as memory, \
+                patch('torch.empty') as allocate, patch('torch.cuda.device'), \
+                patch('torch.cuda.empty_cache') as release_cache:
+            with reserve_startup_memory(76) as release:
+                allocate.assert_called_once_with((76 * gib,), device=torch.device('cuda:0'), dtype=torch.uint8)
+                release_cache.assert_not_called()
+                release()
+            release_cache.assert_called_once()
+            memory.return_value = (72 * gib, 80 * gib)
+            with self.assertRaisesRegex(RuntimeError, '72.00 of 80.00 GiB free'):
+                with reserve_startup_memory(76):
+                    self.fail('Reservation must fail before the simulator starts')
+            allocate.assert_called_once()
 
     def test_sensor_noise_history_continues_in_imagination(self):
         self.config['domain_randomization'] = {'observation_noise': {

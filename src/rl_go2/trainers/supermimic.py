@@ -3,7 +3,7 @@
 Independent reproduction inspired by Zhengtianjin/go2-supermimic (MIT) and
 Liao et al., arXiv:2610.28480. No mjlab code or task-specific assets are required.
 """
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import closing, contextmanager
 from dataclasses import asdict, dataclass
 from functools import partial
@@ -16,7 +16,7 @@ import torch
 
 from torch import nn
 
-from rl_go2.backends import LinkPointForces
+from rl_go2.backends import LinkPointForces, make_backend
 from rl_go2.config import FOOT_NAMES, MODEL_PARAMETER_KEYS
 from rl_go2.env import QuadrupedEnv
 from rl_go2.observations import SensorReadings
@@ -653,6 +653,7 @@ def cuda_matmul_tf32(enabled):
 
 def train(config, output):
     from rl_go2.trainers import save_run_spec
+    from rl_go2.trainers.cuda_startup import reserve_startup_memory
 
     cfg = TrainConfig(**config['trainer'])
     cfg.validate()
@@ -660,17 +661,22 @@ def train(config, output):
     if courses and cfg.iterations > courses[-1]['end_iteration']:
         raise ValueError('Training iterations exceed the total course budget')
     torch.manual_seed(config['seed'])
-    # Metadata creation rejects existing directories before creating a simulator.
-    save_run_spec(config, output)
-    output = Path(output)
-    with (output / 'metrics.jsonl').open('w') as log:
-        if courses:
-            _train_courses(config, cfg, output, log)
-        else:
-            _train_stage(config, cfg, output, log, 1, cfg.iterations)
+    reserve_gib = 0
+    if (config['backend'], config['device']) == ('genesis', 'cuda'):
+        reserve_gib = config.get('startup_gpu_reserve_gib', 0)
+    with reserve_startup_memory(reserve_gib) as release_startup_memory:
+        save_run_spec(config, output)
+        output = Path(output)
+        with (output / 'metrics.jsonl').open('w') as log:
+            if courses:
+                _train_courses(config, cfg, output, log, release_startup_memory)
+            else:
+                _train_stage(config, cfg, output, log, 1, cfg.iterations,
+                             release_startup_memory=release_startup_memory)
 
 
-def _train_courses(config, cfg: TrainConfig, output: Path, log) -> None:
+def _train_courses(config, cfg: TrainConfig, output: Path, log,
+                   release_startup_memory: Callable[[], None] | None) -> None:
     first = 1
     progress = (0, 0)
     previous = None
@@ -680,19 +686,25 @@ def _train_courses(config, cfg: TrainConfig, output: Path, log) -> None:
         progress, previous = _train_stage(
             {**config, **course['settings']}, cfg, output, log, first, last,
             progress=progress, previous=previous, course_index=index,
+            release_startup_memory=release_startup_memory,
         )
+        release_startup_memory = None
         if last == cfg.iterations:
             break
         first = last + 1
 
 
 def _train_stage(config, cfg: TrainConfig, output: Path, log, first: int, last: int, *,
-                 progress=(0, 0), previous=None, course_index: int | None = None):
+                 progress=(0, 0), previous=None, course_index: int | None = None,
+                 release_startup_memory: Callable[[], None] | None = None):
     from rl_go2.trainers.supermimic_courses import continue_from_course, input_layouts
     from rl_go2.trainers.supermimic_init import initialize_weights
 
     environment_steps, policy_updates = progress
-    env = QuadrupedEnv(config, record_transitions=True)
+    backend = None
+    if release_startup_memory is not None:
+        backend = make_backend(config, before_genesis_build=release_startup_memory)
+    env = QuadrupedEnv(config, record_transitions=True, backend=backend)
     with closing(env), cuda_matmul_tf32(cfg.tf32 and env.device.type == 'cuda'):
         env.environment_steps = environment_steps
         trainer = Trainer(env, cfg)

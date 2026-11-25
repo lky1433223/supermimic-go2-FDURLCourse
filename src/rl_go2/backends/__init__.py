@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -65,17 +66,11 @@ class PhysicsBackend(Protocol):
     def close(self) -> None: ...
 
 
-def make_backend(config, viewer=False):
+def make_backend(config, viewer=False, *, before_genesis_build: Callable[[], None] | None = None):
     name = config["backend"]
     if name == "isaac":
         raise NotImplementedError("Isaac Sim backend is reserved; no runtime is installed")
-    if name == "genesis":
-        from .genesis import GenesisBackend
-        cls = GenesisBackend
-    elif name == "mujoco":
-        from .mujoco import MujocoBackend
-        cls = MujocoBackend
-    else:
+    if name not in {"genesis", "mujoco"}:
         raise ValueError(f"Unknown backend: {name}")
     entities = [e for e in config["scene"]["entities"] if e.get("robot")]
     if len(entities) != 1 or entities[0]["id"] != config["robot"]["entity_id"]:
@@ -83,4 +78,11 @@ def make_backend(config, viewer=False):
     from pathlib import Path
     if not Path(entities[0]["file"]).is_file():
         raise FileNotFoundError("Go2 asset missing. Run: uv run python scripts/fetch_go2.py")
-    return cls(config, viewer=viewer)
+    if name == "genesis":
+        from .genesis import GenesisBackend
+
+        return GenesisBackend(config, viewer=viewer, before_build=before_genesis_build)
+
+    from .mujoco import MujocoBackend
+
+    return MujocoBackend(config, viewer=viewer)

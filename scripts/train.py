@@ -4,6 +4,7 @@ import argparse
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime
 import json
+import math
 from pathlib import Path
 import shlex
 import subprocess
@@ -21,6 +22,8 @@ def main():
     parser.add_argument("--device", choices=["cpu", "cuda", "mps"])
     parser.add_argument("--num-envs", type=int)
     parser.add_argument("--iterations", type=int)
+    parser.add_argument("--gpu-reserve-gib", type=float,
+                        help="Override startup GPU reservation for Genesis/CUDA SuperMimic (0 disables it)")
     parser.add_argument("--output", type=Path, help="Run root; model artifacts are written under training/")
     parser.add_argument("--init-checkpoint", type=Path, help="Initialize training weights from a checkpoint")
     parser.add_argument("--driver-policy", type=Path, help="Optional TorchScript data driver for SuperMimic")
@@ -31,6 +34,14 @@ def main():
         if value is not None:
             config[key] = value
     trainer = config["trainer"]
+    if args.gpu_reserve_gib is not None:
+        if not math.isfinite(args.gpu_reserve_gib) or args.gpu_reserve_gib < 0:
+            parser.error("--gpu-reserve-gib must be finite and nonnegative")
+        if args.gpu_reserve_gib and (config["backend"], config["device"], trainer["name"]) != (
+            "genesis", "cuda", "supermimic"
+        ):
+            parser.error("--gpu-reserve-gib requires Genesis/CUDA SuperMimic")
+        config["startup_gpu_reserve_gib"] = args.gpu_reserve_gib
     if args.iterations is not None:
         if config.get("courses") and args.iterations > trainer["iterations"]:
             parser.error("--iterations cannot exceed the configured course budget")

@@ -9,6 +9,7 @@ robot_overrides:
 task: ../tasks/flat_walk.yaml
 backend: genesis
 device: cuda
+startup_gpu_reserve_gib: 76
 num_envs: 4096
 seed: 1
 curriculum:
