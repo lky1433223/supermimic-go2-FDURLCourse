@@ -36,7 +36,7 @@ reward:
     reference: reset_pose
     tolerance_rad: {hip: 0.15, thigh: 0.35, calf: 0.50}
   gait_mismatch:
-    weight: 0.0  # Keep fixed-phase gait shaping disabled.
+    weight: -0.5
     pattern: trot
     period_s: 0.60
     stance_fraction: 0.56

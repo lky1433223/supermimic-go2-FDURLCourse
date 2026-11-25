@@ -118,26 +118,29 @@ class FlatWalkTask:
                                   readings.joint_velocity, commands, previous_action, self.default,
                                   self.observation_scales, projected_gravity=readings.projected_gravity)
 
-    def reward(self, state, action, previous_action, torque, context=None):
+    def reward(self, state, action, previous_action, torque, context=None, *,
+               base_height_m: torch.Tensor | None = None):
         commands = self.commands if context is None else context["commands"]
         linear, angular, gravity = self.body_state(state)
         sigma = self.config["tracking_sigma"]
+        height = state.position[:, 2] if base_height_m is None else base_height_m
         terms = {
             "tracking_linear": torch.exp(-((linear[:, :2] - commands[:, :2])**2).sum(-1) / sigma),
             "tracking_yaw": torch.exp(-(angular[:, 2] - commands[:, 2])**2 / sigma),
             "vertical_velocity": linear[:, 2]**2,
             "roll_pitch_velocity": (angular[:, :2]**2).sum(-1),
             "orientation": (gravity[:, :2]**2).sum(-1),
-            "height": (state.position[:, 2] - self.config["target_height"])**2,
+            "height": (height - self.config["target_height"])**2,
             "torque": (torque**2).sum(-1),
             "action_rate": ((action - previous_action)**2).sum(-1),
         }
         # Integrate reward rates over physical time, independent of policy frequency.
         return sum(terms[name] * weight for name, weight in self.config["reward_weights"].items()) * self.dt
 
-    def terminated(self, state):
+    def terminated(self, state, *, base_height_m: torch.Tensor | None = None):
         _, _, gravity = self.body_state(state)
-        return ((state.position[:, 2] < self.config["termination_min_height"])
+        height = state.position[:, 2] if base_height_m is None else base_height_m
+        return ((height < self.config["termination_min_height"])
                 | (-gravity[:, 2] < self.config["termination_min_upright"]))
 
     def model_features(self, state, context):
@@ -154,9 +157,11 @@ class FlatWalkTask:
         return {**context, "commands": torch.where(left <= 0, commands, context["commands"]),
                 "command_steps_left": torch.where(left <= 0, self.resample_steps, left)}
 
-    def termination_probability(self, state, context, height_softness, upright_softness):
+    def termination_probability(self, state, context, height_softness, upright_softness, *,
+                                base_height_m: torch.Tensor | None = None):
         _, _, gravity = self.body_state(state)
-        low = torch.sigmoid((self.config["termination_min_height"] - state.position[:, 2]) / height_softness)
+        height = state.position[:, 2] if base_height_m is None else base_height_m
+        low = torch.sigmoid((self.config["termination_min_height"] - height) / height_softness)
         tilted = torch.sigmoid((self.config["termination_min_upright"] + gravity[:, 2]) / upright_softness)
         return 1 - (1 - low) * (1 - tilted)
 

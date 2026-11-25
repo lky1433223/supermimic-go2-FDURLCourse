@@ -22,7 +22,7 @@ from rl_go2.state import rotate_inverse
 from rl_go2.tasks.flat_walk import FlatWalkTask
 from rl_go2.trainers.cuda_startup import reserve_startup_memory
 from rl_go2.trainers.supermimic import (
-    Trainer, TrainConfig, _train_courses, imagined_rollout, frozen, lambda_returns, train,
+    Trainer, TrainConfig, _train_courses, imagined_rollout, imagined_step, frozen, lambda_returns, train,
 )
 from rl_go2.trainers.supermimic_init import initialize_weights
 from rl_go2.trainers.terrain_features import TerrainHeightScan
@@ -241,6 +241,34 @@ class SuperMimicTests(unittest.TestCase):
                     local.append(height - base_z)
             expected.append(local)
         torch.testing.assert_close(scan(positions, inverse_headings), torch.tensor(expected))
+
+    def test_terrain_height_reward_and_termination_match_in_simulation_and_imagination(self):
+        self.config['scene'] = load_scene(ROOT / 'configs/scenes/single_step.yaml')
+        env = self.make_trainer().env
+        self.addCleanup(env.close)
+        env.task.commands.zero_()
+        action = torch.zeros(2, 12)
+        env.backend.position.copy_(torch.tensor([[0.5, 0., 0.30], [1.25, 0., 0.34]]))
+        env.state = env.backend.read_state()
+        _, reward, done, _ = env.step(action)
+        torch.testing.assert_close(reward[0], reward[1])
+        self.assertFalse(done.any())
+
+        edge = env.backend.read_state()
+        edge.position.copy_(torch.tensor([[0.96, 0., 0.30], [1.04, 0., 0.30]]))
+        torch.testing.assert_close(env.walking_height_m(edge), torch.tensor([0.30 - 0.04 / 3, 0.30 - 0.08 / 3]))
+
+        env.backend.position[:, 2] = 0.14
+        env.state = env.backend.read_state()
+        pred = pack(env.state)
+        _, _, imagined_reward, survival, _ = imagined_step(
+            env, lambda *_: (pred, action), lambda _: action, self.cfg, pred, action, env.model_context()
+        )
+        _, real_reward, done, _ = env.step(action)
+        self.assertEqual(done.tolist(), [False, True])
+        self.assertGreater(survival[0].item(), 0.8)
+        self.assertLess(survival[1].item(), 0.2)
+        torch.testing.assert_close(imagined_reward, real_reward)
 
     def test_world_model_requeries_height_at_predicted_positions(self):
         flat = self.make_trainer()
@@ -547,6 +575,21 @@ class SuperMimicTests(unittest.TestCase):
             self.assertTrue(all(left < right for left, right in zip(steps, steps[1:])), (name, steps))
         widths = [saved['world_model']['net.0.weight'].shape[1] for saved in checkpoints]
         self.assertEqual(widths, [77, 77, 77, 93, 93, 147])
+
+    def test_gait_reward_uses_contact_and_episode_step_during_policy_updates(self):
+        config = load_experiment(ROOT / 'configs/experiments/curriculum_supermimic_rewards_smoke.yaml')
+        config.update(backend='mujoco', device='cpu', num_envs=1)
+        env = QuadrupedEnv(config, record_transitions=True)
+        self.addCleanup(env.close)
+        self.cfg.bootstrap_weight = 1.0
+        trainer = Trainer(env, self.cfg)
+        env.task.commands[:] = env.task.commands.new_tensor([[0.5, 0.0, 0.0]])
+        trainer.collect()
+        self.assertEqual(env.observe().shape, (1, 45))
+        self.assertEqual(trainer.replay.data['contact_labels'].shape[-1], 5)
+        self.assertEqual(trainer.replay.data['context/episode_step'][:4, 0].tolist(), [0, 1, 2, 3])
+        self.assertTrue(math.isfinite(trainer.fit_model()))
+        self.assertTrue(math.isfinite(trainer.improve_policy()['imagined_return']))
 
     def test_curriculum_resets_cuda_compiler_only_between_active_courses(self):
         config = load_experiment(ROOT / 'configs/experiments/curriculum_supermimic.yaml')

@@ -23,7 +23,6 @@ from rl_go2.observations import SensorReadings
 from rl_go2.point_push import Go2PushGeometry, PointPushConfig, PointPushScheduler, PushState
 from rl_go2.step_delay import StepDelayState
 from rl_go2.trainers.model_learning import DynamicsModel, ReplayBuffer, RunningNorm, heading, local_state, mlp, pack, unpack
-from rl_go2.trainers.terrain_features import TerrainHeightScan
 
 OFFICIAL_REPLAY_RATIO = 16
 
@@ -204,8 +203,11 @@ def imagined_step(env, model, actor, cfg, state, previous_action, context,
         next_state, torque = model(state, applied_action, previous_action, features, wrenches_world)
     next_robot = unpack(next_state)
     torque = torque.clamp(-env.controller.limits, env.controller.limits)
-    reward = env.task.reward(next_robot, issued_action, previous_action, torque, context)
-    failure = env.task.termination_probability(next_robot, context, cfg.height_softness, cfg.upright_softness)
+    height = env.walking_height_m(next_robot)
+    height_arg = {} if height is None else {'base_height_m': height}
+    reward = env.task.reward(next_robot, issued_action, previous_action, torque, context, **height_arg)
+    failure = env.task.termination_probability(next_robot, context, cfg.height_softness, cfg.upright_softness,
+                                               **height_arg)
     if walk is not None:
         if walk.contact_enabled:
             assert contact_probability is not None
@@ -386,13 +388,9 @@ class Trainer:
         ci = critic_input(state, env.previous_action, context, features)
         self.actor = Actor(env.observe().shape[-1], env.num_actions, cfg.actor_hidden,
                            env.config['robot']['action_clip']).to(env.device)
-        scene = env.config['scene']
-        terrain_scan = TerrainHeightScan(scene) if scene.get('height_maps') or scene.get('terrain_patches') or any(
-            entity['type'] == 'box' for entity in scene['entities']
-        ) else None
         self.model = DynamicsModel(
             features.shape[-1], cfg.model_hidden, wrench_links=len(self.wrench_link_indices),
-            terrain_scan=terrain_scan, predict_contacts=env.walk_rewards is not None and env.walk_rewards.requires_contacts,
+            terrain_scan=env.terrain_scan, predict_contacts=env.walk_rewards is not None and env.walk_rewards.requires_contacts,
         ).to(env.device)
         self.critic = Critic(ci.shape[-1], cfg.critic_hidden).to(env.device)
         push_spec = PointPushConfig.from_config(env.config)

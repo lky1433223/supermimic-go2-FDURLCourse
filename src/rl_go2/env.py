@@ -13,6 +13,7 @@ from rl_go2.state import RobotState
 from rl_go2.step_delay import StepDelayState, action_delay_from_config
 from rl_go2.tasks import get_task_type
 from rl_go2.tasks.walk_rewards import WalkRewards
+from rl_go2.terrain_features import TerrainHeightScan
 
 
 @dataclass
@@ -66,7 +67,12 @@ class QuadrupedEnv:
         self.previous_action = torch.zeros(self.num_envs, self.num_actions, device=self.device)
         self.environment_steps = 0
         self.record_transitions = record_transitions
-        patches = config['scene'].get('terrain_patches', [])
+        scene = config["scene"]
+        self.ground_height_m = next((e["position"][2] for e in scene["entities"] if e["type"] == "plane"), 0.0)
+        patches = scene.get('terrain_patches', [])
+        self.terrain_scan = None
+        if scene.get("height_maps") or patches or any(e["type"] == "box" for e in scene["entities"]):
+            self.terrain_scan = TerrainHeightScan(scene).to(self.device)
         self.terrain_patches = patches
         self._fixed_terrain_index: int | None = None
         if patches:
@@ -162,6 +168,16 @@ class QuadrupedEnv:
         if self.base_com_offset_m is not None:
             context["base_com_offset_m"] = self.base_com_offset_m
         return context
+
+    def walking_height_m(self, state: RobotState) -> torch.Tensor | None:
+        """Return terrain-relative walking height, or use the task's default world Z."""
+        if self.walk_rewards is None:
+            return None
+        if self.terrain_scan is not None:
+            return self.terrain_scan.base_clearance_m(state.position, state.quaternion)
+        if self.ground_height_m:
+            return state.position[:, 2] - self.ground_height_m
+        return None
 
     def select_terrain(self, index: int) -> None:
         """Reset on the selected patch and keep subsequent resets on that patch."""
@@ -287,8 +303,10 @@ class QuadrupedEnv:
                 peak_contact_force = torch.maximum(peak_contact_force, contacts.prohibited_force_n)
         self.episode_length_buf += 1
         self.environment_steps += self.num_envs
-        reward = self.task.reward(self.state, issued_action, self.previous_action, torque)
-        terminated = self.task.terminated(self.state)
+        height = self.walking_height_m(self.state)
+        height_arg = {} if height is None else {"base_height_m": height}
+        reward = self.task.reward(self.state, issued_action, self.previous_action, torque, **height_arg)
+        terminated = self.task.terminated(self.state, **height_arg)
         contact_labels = None
         contact_failure = None
         if walk is not None:

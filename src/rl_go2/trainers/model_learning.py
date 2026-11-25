@@ -10,7 +10,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from rl_go2.state import RobotState, quat_mul, rotate_inverse
-from rl_go2.trainers.terrain_features import TerrainHeightScan
+from rl_go2.terrain_features import TerrainHeightScan
 
 STATE_DIM = 37
 
