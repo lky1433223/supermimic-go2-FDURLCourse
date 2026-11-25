@@ -21,6 +21,7 @@ from rl_go2.config import FOOT_NAMES, MODEL_PARAMETER_KEYS
 from rl_go2.env import QuadrupedEnv
 from rl_go2.observations import SensorReadings
 from rl_go2.point_push import Go2PushGeometry, PointPushConfig, PointPushScheduler, PushState
+from rl_go2.step_delay import StepDelayState
 from rl_go2.trainers.model_learning import DynamicsModel, ReplayBuffer, RunningNorm, heading, local_state, mlp, pack, unpack
 from rl_go2.trainers.terrain_features import TerrainHeightScan
 
@@ -180,7 +181,7 @@ def critic_input(state, previous_action, context, features):
 
 def imagined_step(env, model, actor, cfg, state, previous_action, context,
                   wrenches_world: torch.Tensor | None = None, *,
-                  observation: torch.Tensor | None = None):
+                  observation: torch.Tensor | None = None, action_delay_state: StepDelayState | None = None):
     robot = unpack(state)
     features = env.task.model_features(robot, context)
     inputs = None
@@ -189,14 +190,16 @@ def imagined_step(env, model, actor, cfg, state, previous_action, context,
             inputs = critic_input(state, previous_action, context, features)
     if observation is None:
         observation = env.task.observe(robot, previous_action, context)
-    action = actor(observation)
-    _, action = env.controller.target(action)
-    next_state, torque = model(state, action, previous_action, features, wrenches_world)
+    issued_action = env.controller.clip_action(actor(observation))
+    applied_action = issued_action
+    if action_delay_state is not None:
+        applied_action = env.action_delay.select(issued_action, action_delay_state)
+    next_state, torque = model(state, applied_action, previous_action, features, wrenches_world)
     next_robot = unpack(next_state)
     torque = torque.clamp(-env.controller.limits, env.controller.limits)
-    reward = env.task.reward(next_robot, action, previous_action, torque, context)
+    reward = env.task.reward(next_robot, issued_action, previous_action, torque, context)
     continuation = 1 - env.task.termination_probability(next_robot, context, cfg.height_softness, cfg.upright_softness)
-    return next_state, action, reward, continuation, inputs
+    return next_state, issued_action, reward, continuation, inputs
 
 
 def imagined_return(rewards, continuations, gamma):
@@ -219,10 +222,13 @@ def imagined_rollout(env, model, actor, critic, seed, cfg, *, step=None, returns
 
     A push scheduler continues the event state stored in the seed. Without
     either a plan or a scheduler, only the initial recorded wrench is applied.
+    If enabled, action delay continues the sampled episode's queue and lag.
     """
     if step is None:
         step = partial(imagined_step, env, model, actor, cfg)
     state, previous_action, context = seed['state'], seed['previous_action'], context_from(seed)
+    action_delay = env.action_delay
+    delay_state = None if action_delay is None else StepDelayState(seed['action_delay_steps'], seed['action_queue'])
     observation_noise = env.observation_noise
     noise_history = {key.removeprefix('sensor_history/'): value for key, value in seed.items()
                      if key.startswith('sensor_history/')}
@@ -248,17 +254,21 @@ def imagined_rollout(env, model, actor, critic, seed, cfg, *, step=None, returns
         step_args = (state, previous_action, context)
         if wrenches_world is not None:
             step_args += (wrenches_world,)
-        if observation_noise is None:
-            result = step(*step_args)
-        else:
+        step_options = {}
+        if delay_state is not None:
+            step_options['action_delay_state'] = delay_state
+        if observation_noise is not None:
             if index == 0:
                 observation = seed['actor_observation']
             else:
                 robot = unpack(state)
                 readings, noise_history = observation_noise.apply(SensorReadings.from_state(robot), noise_history)
                 observation = env.task.observe(robot, previous_action, context, readings=readings)
-            result = step(*step_args, observation=observation)
-        state, action, reward, continuation, critic_obs = result
+            step_options['observation'] = observation
+        state, action, reward, continuation, critic_obs = step(*step_args, **step_options)
+        if delay_state is not None:
+            # Keep queued commands differentiable until the dynamics apply them.
+            delay_state = action_delay.advance(action, delay_state)
         rewards.append(reward)
         continuations.append(continuation)
         if cfg.bootstrap_weight:
@@ -462,6 +472,9 @@ class Trainer:
                       'torque': transition.torque, 'terminated': transition.terminated,
                       'truncated': transition.truncated, 'features': features,
                       'reward': reward, 'is_driver': self.driver_mask.clone()}
+            if transition.action_delay_state is not None:
+                record['action_delay_steps'] = transition.action_delay_state.steps
+                record['action_queue'] = transition.action_delay_state.history
             if self.wrench_link_indices:
                 wrenches = transition.link_wrenches_world
                 shape = (self.env.num_envs, len(self.wrench_link_indices), 6)

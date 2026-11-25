@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from random import Random
 
 from rl_go2.config import FOOT_NAMES, base_com_offset_ranges, base_mass_scale_range, foot_friction_ranges
+from rl_go2.step_delay import action_delay_from_config
 from .push_events import PushSpec
 
 
@@ -22,10 +23,12 @@ class EvaluationCondition:
     friction_phases: tuple[FrictionPhase, ...] = ()
     point_push: PushSpec | None = None
     observation_noise: dict | None = None
+    action_delay_steps: tuple[int, int] | None = None
 
     def validate(self) -> None:
-        """Validate all physical fields before loading the evaluated policy."""
+        """Validate condition fields before loading the evaluated policy."""
         config = self.apply({})
+        action_delay_from_config(config)
         if self.observation_noise is not None:
             from rl_go2.observation_noise import ObservationNoise
 
@@ -53,7 +56,8 @@ class EvaluationCondition:
         """Build the environment configuration for this condition."""
         domain = {}
         parameters = {'foot_ground_friction': self.foot_ground_friction, 'base_mass': self.base_mass,
-                      'base_com': self.base_com, 'observation_noise': self.observation_noise}
+                      'base_com': self.base_com, 'observation_noise': self.observation_noise,
+                      'action_delay_steps': self.action_delay_steps}
         for key, value in parameters.items():
             if value is not None:
                 domain[key] = deepcopy(value)

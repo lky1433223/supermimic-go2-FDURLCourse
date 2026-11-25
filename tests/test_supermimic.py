@@ -98,6 +98,51 @@ class SuperMimicTests(unittest.TestCase):
         torch.testing.assert_close(env.observe()[:, 9:21], torch.full((2, 12), 0.2))
         self.assertEqual(env.noise_history['frame_delay/steps'].tolist(), [0, 0])
 
+    def test_action_delay_applies_queued_commands_and_preserves_imagination_gradients(self):
+        self.config['domain_randomization'] = {
+            'action_delay_steps': [0, 2],
+            'observation_noise': {'frame_delay_steps': [1, 1]},
+        }
+        with patch('rl_go2.step_delay.torch.randint', return_value=torch.tensor([0, 2])) as sample_delay:
+            trainer = self.make_trainer()
+            env = trainer.env
+            for issued, delayed in ((0.1, 0.0), (0.2, 0.0), (0.3, 0.1)):
+                command = torch.full((2, 12), issued)
+                observation, _, _, extras = env.step(command)
+                expected = torch.tensor([[issued], [delayed]]).expand(-1, 12)
+                torch.testing.assert_close(extras['transition'].action, expected)
+                torch.testing.assert_close(observation[:, -12:], command)
+            sample_delay.assert_called_once_with(0, 3, (2,), device=env.device)
+
+        with patch('rl_go2.step_delay.torch.randint', return_value=torch.tensor([1])):
+            env.reset(torch.tensor([0]))
+        self.assertEqual(env.action_delay_state.steps.tolist(), [1, 2])
+        torch.testing.assert_close(env.action_delay_state.history[0], torch.zeros(2, 12))
+        trainer.collect()
+        seed = {key: frames[0] for key, frames in trainer.replay.data.items()}
+        torch.testing.assert_close(seed['action'], torch.tensor([[0.0], [0.2]]).expand(-1, 12))
+
+        issued_actions, model_actions = [], []
+
+        def record_command(module, args, output):
+            issued_actions.append(output)
+
+        def record_applied_action(module, args):
+            model_actions.append(args[1])
+
+        actor_hook = trainer.actor.register_forward_hook(record_command)
+        model_hook = trainer.model.register_forward_pre_hook(record_applied_action)
+        try:
+            imagined_rollout(env, trainer.model, trainer.actor, trainer.critic, seed, self.cfg)
+        finally:
+            actor_hook.remove()
+            model_hook.remove()
+        torch.testing.assert_close(model_actions[0], seed['action'])
+        torch.testing.assert_close(model_actions[1][1], seed['action_queue'][1, 0])
+        torch.testing.assert_close(model_actions[2][1], env.controller.clip_action(issued_actions[0])[1])
+        gradient, = torch.autograd.grad(model_actions[2][1].sum(), issued_actions[0])
+        self.assertGreater(gradient[1].abs().sum().item(), 0)
+
     def test_terrain_scan_reads_exact_tiles_in_the_yaw_frame(self):
         scene = load_scene(ROOT / 'configs/scenes/rough_ground.yaml')
         patch = scene['height_maps']['rough']

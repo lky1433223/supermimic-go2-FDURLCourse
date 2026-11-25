@@ -10,12 +10,13 @@ from rl_go2.curriculum import make_curriculum
 from rl_go2.observation_noise import NoiseHistory, ObservationNoise
 from rl_go2.observations import SensorReadings
 from rl_go2.state import RobotState
+from rl_go2.step_delay import StepDelayState, action_delay_from_config
 from rl_go2.tasks import get_task_type
 
 
 @dataclass
 class Transition:
-    """Optional model-learning record. next_state is ALWAYS before automatic reset."""
+    """Record the applied action and pre-reset next state, with command history for the actor."""
 
     state: RobotState
     action: torch.Tensor
@@ -27,6 +28,7 @@ class Transition:
     torque: torch.Tensor
     # (envs, links, 6), world force and moment about each authored link origin at step start.
     link_wrenches_world: torch.Tensor | None = None
+    action_delay_state: StepDelayState | None = None  # Before receiving this step's command.
 
 
 class QuadrupedEnv:
@@ -35,6 +37,8 @@ class QuadrupedEnv:
         task_type = get_task_type(config["task"]["name"])
         task_type.validate_config(config["task"], config["robot"])
         self.observation_noise = ObservationNoise.from_config(config)
+        self.action_delay = action_delay_from_config(config)
+        self.action_delay_state: StepDelayState | None = None
         self.noise_history: NoiseHistory = {}
         self._sensor_readings: SensorReadings | None = None
         self.curriculum = make_curriculum(config["curriculum"])
@@ -153,7 +157,7 @@ class QuadrupedEnv:
         self.reset()
 
     def reset(self, env_ids: torch.Tensor | None = None, metrics: dict | None = None) -> torch.Tensor:
-        """Reset the selected environments and seed their sensor histories from the new episode."""
+        """Reset the selected environments and initialize their delays for the new episode."""
         reset_all = env_ids is None
         if env_ids is None:
             env_ids = torch.arange(self.num_envs, device=self.device)
@@ -174,6 +178,7 @@ class QuadrupedEnv:
         self.episode_length_buf[env_ids] = 0
         self.episode_return[env_ids] = 0
         self.previous_action[env_ids] = 0
+        self._reset_action_delay(env_ids, reset_all)
         if self.observation_noise is not None:
             readings = SensorReadings.from_state(self.state)
             if reset_all:
@@ -181,6 +186,18 @@ class QuadrupedEnv:
             elif env_ids.numel():
                 self._reset_sensor_readings(readings, env_ids)
         return self.observe()
+
+    def _reset_action_delay(self, env_ids: torch.Tensor, reset_all: bool) -> None:
+        if self.action_delay is None or not env_ids.numel():
+            return
+        reset_state = self.action_delay.reset(self.previous_action[env_ids])
+        if reset_all:
+            self.action_delay_state = reset_state
+            return
+        old = self.action_delay_state
+        assert old is not None
+        self.action_delay_state = StepDelayState(old.steps.index_copy(0, env_ids, reset_state.steps),
+                                                old.history.index_copy(0, env_ids, reset_state.history))
 
     def _reset_sensor_readings(self, readings: SensorReadings, env_ids: torch.Tensor) -> None:
         selected = SensorReadings(*(reading[env_ids] for reading in readings))
@@ -229,7 +246,15 @@ class QuadrupedEnv:
             )
             if self.record_transitions:
                 link_wrenches_world = link_point_forces.wrenches_world(self.backend.read_link_quaternions())
-        target, clipped_action = self.controller.target(action)
+        issued_action = self.controller.clip_action(action)
+        delay_state = self.action_delay_state
+        next_delay_state = None
+        applied_action = issued_action
+        if self.action_delay is not None:
+            assert delay_state is not None
+            applied_action = self.action_delay.select(issued_action, delay_state)
+            next_delay_state = self.action_delay.advance(issued_action, delay_state)
+        target = self.controller.position_target(applied_action)
         for _ in range(self.config["robot"]["control_decimation"]):
             torque = self.controller.torque(target, self.state)
             if link_point_forces is not None:
@@ -241,23 +266,24 @@ class QuadrupedEnv:
             self.state = self.backend.read_state()
         self.episode_length_buf += 1
         self.environment_steps += self.num_envs
-        reward = self.task.reward(self.state, clipped_action, self.previous_action, torque)
+        reward = self.task.reward(self.state, issued_action, self.previous_action, torque)
         terminated = self.task.terminated(self.state)
         truncated = (self.episode_length_buf >= self.max_episode_length) & ~terminated
         done = terminated | truncated
         self.episode_return += reward
         old_action = self.previous_action.clone() if self.record_transitions else None
         # Keep a normal persistent buffer so reset also works outside inference_mode.
-        self.previous_action.copy_(clipped_action)
+        self.previous_action.copy_(issued_action)
+        self.action_delay_state = next_delay_state
         if self.observation_noise is not None:
             readings = SensorReadings.from_state(self.state)
             self._sensor_readings, self.noise_history = self.observation_noise.apply(readings, self.noise_history)
         extras = {"time_outs": truncated, "terminated": terminated, "truncated": truncated}
         # Allocate only when needed; buffers returned to the learner never alias future in-place updates.
         if self.record_transitions:
-            extras["transition"] = Transition(old_state.clone(), clipped_action.clone(), self.state.clone(),
+            extras["transition"] = Transition(old_state.clone(), applied_action.clone(), self.state.clone(),
                                                context, terminated.clone(), truncated.clone(),
-                                               old_action, torque.detach().clone(), link_wrenches_world)
+                                               old_action, torque.detach().clone(), link_wrenches_world, delay_state)
         done_ids = done.nonzero(as_tuple=False).flatten()
         if self.friction_switch_steps is not None:
             self.friction_steps_left.sub_(1)

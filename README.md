@@ -450,6 +450,21 @@ vx/vy/yaw RMSE 分别为 0.0586 m/s、0.0179 m/s、0.0404 rad/s。
 python scripts/evaluate.py --task sensor-noise --backend mujoco --run-dir output/<训练目录> --iteration <轮次>
 ```
 
+### 动作延迟
+
+`terrain_supermimic_push.yaml` 在 `domain_randomization.action_delay_steps` 下设为 `[0, 2]`。
+每个仿真环境在回合重置时独立、等概率抽取 0、1 或 2 个控制步（50 Hz 下为 0、20 或 40 ms），回合内固定。
+该延迟与观测延迟分别抽样。队列用零动作初始化，对应默认关节目标，缺省配置即时执行。
+Policy 观测和动作变化惩罚使用发出的指令，PD 和世界模型使用当步实际执行的动作。
+SuperMimic 从 replay 恢复动作队列，并在想象 rollout 中按相同延迟执行。
+
+`action-delay` 评测用相同动作和干净观测对比 `nominal`、`delay-1-step`、`delay-2-steps`。
+其他评测任务使用即时动作。
+
+```bash
+python scripts/evaluate.py --task action-delay --backend mujoco --run-dir output/<训练目录> --iteration <轮次>
+```
+
 ### 为什么旧训练没有改善
 
 - **覆盖不足。** 旧检查只有 9632 条转移，多数接近站立。采样轨迹上旧 actor 动作标准差约 0.10，而走路 driver 约 0.96。

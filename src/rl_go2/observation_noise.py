@@ -10,6 +10,7 @@ import torch
 
 from rl_go2.observations import SensorReadings, project_gravity
 from rl_go2.state import quat_mul
+from rl_go2.step_delay import EpisodeStepDelay, StepDelayState
 
 
 type NoiseHistory = dict[str, torch.Tensor]
@@ -101,24 +102,21 @@ class Dropout:
 class FrameDelay:
     """Hold one shared integer delay across all readings of an episode."""
 
-    min_steps: int
-    max_steps: int
+    delay: EpisodeStepDelay
 
     def apply(self, readings: SensorReadings, history: NoiseHistory) -> tuple[SensorReadings, NoiseHistory]:
         """Sample the delay at reset, then return one frame of that age per environment."""
         frame = torch.cat(readings, dim=-1)
         if 'frame_delay/steps' not in history:
-            steps = torch.randint(self.min_steps, self.max_steps + 1, (frame.shape[0],), device=frame.device)
-            past = frame[:, None].expand(-1, self.max_steps, -1).contiguous()
-            return readings, {'frame_delay/steps': steps, 'frame_delay/frames': past}
+            state = self.delay.reset(frame)
+            return readings, {'frame_delay/steps': state.steps, 'frame_delay/frames': state.history}
 
-        steps = history['frame_delay/steps']
-        frames = torch.cat((frame[:, None], history['frame_delay/frames']), dim=1)
-        index = steps[:, None, None].expand(-1, 1, frame.shape[-1])
-        delayed = frames.gather(1, index).squeeze(1)
+        state = StepDelayState(history['frame_delay/steps'], history['frame_delay/frames'])
+        delayed = self.delay.select(frame, state)
         widths = [reading.shape[-1] for reading in readings]
+        state = self.delay.advance(frame, state)
         return SensorReadings(*delayed.split(widths, dim=-1)), {
-            'frame_delay/steps': steps, 'frame_delay/frames': frames[:, :self.max_steps],
+            'frame_delay/steps': state.steps, 'frame_delay/frames': state.history,
         }
 
 
@@ -171,11 +169,9 @@ class ObservationNoise:
         if not isinstance(spec, dict) or spec.keys() - (ERROR_WIDTHS.keys() | {'frame_delay_steps'}):
             raise ValueError(f'observation_noise supports these channels: {", ".join(ERROR_WIDTHS)}, '
                              'and optional frame_delay_steps')
-        bounds = spec.get('frame_delay_steps', [0, 0])
-        if (not isinstance(bounds, list) or len(bounds) != 2 or any(type(x) is not int for x in bounds)
-                or not 0 <= bounds[0] <= bounds[1]):
-            raise ValueError('observation_noise.frame_delay_steps must be two ordered nonnegative integers')
-        frame_delay = FrameDelay(*bounds) if bounds[1] else None
+        delay = EpisodeStepDelay.from_bounds(spec.get('frame_delay_steps', [0, 0]),
+                                             'observation_noise.frame_delay_steps')
+        frame_delay = FrameDelay(delay) if delay is not None else None
         chains = {}
         for channel, width in ERROR_WIDTHS.items():
             entries = spec.get(channel, [])

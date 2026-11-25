@@ -276,6 +276,10 @@ def load_experiment(path):
     foot_friction_ranges(config)
     base_mass_scale_range(config)
     base_com_offset_ranges(config)
+    if 'action_delay_steps' in config.get('domain_randomization', {}):
+        from rl_go2.step_delay import action_delay_from_config
+
+        action_delay_from_config(config)
     if 'observation_noise' in config.get('domain_randomization', {}):
         from rl_go2.observation_noise import ObservationNoise
 

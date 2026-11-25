@@ -131,6 +131,23 @@ class EvaluationTests(unittest.TestCase):
                 self.assertEqual(noise['joint_velocity'][0]['high'], 1.5)
                 self.assertTrue(all(chain[-1] == {'type': 'delay', 'steps': 1} for chain in noise.values()))
 
+    def test_only_action_delay_task_enables_action_delay(self):
+        config = {'domain_randomization': {'action_delay_steps': [0, 2], 'observation_noise': {
+            'frame_delay_steps': [0, 1],
+        }}}
+        for name, task in TASKS.items():
+            plan = task.build_plan()
+            if name == 'action-delay':
+                cases = output_records(plan, 'comparison')
+                self.assertEqual(list(map(str, cases)), ['nominal', 'delay-1-step', 'delay-2-steps'])
+                for steps, case in enumerate(cases.values()):
+                    domain = case.trials[0].condition.apply(config)['domain_randomization']
+                    self.assertEqual(domain['action_delay_steps'], (steps, steps))
+                    self.assertNotIn('observation_noise', domain)
+            else:
+                for trial in plan.trials:
+                    self.assertNotIn('action_delay_steps', trial.condition.apply(config)['domain_randomization'])
+
     def test_terrain_plan_resolves_one_box_per_step_and_partitions_outputs(self):
         task = TASKS['terrain']
         plan = task.build_plan()
