@@ -14,6 +14,8 @@ import torch
 from rl_go2.backends import LinkPointForces
 from rl_go2.config import FOOT_NAMES, load_experiment, load_scene
 from rl_go2.env import QuadrupedEnv
+from rl_go2.observation_noise import ObservationNoise
+from rl_go2.observations import SensorReadings
 from rl_go2.point_push import Go2PushGeometry, PointPushConfig, PointPushScheduler, PushState
 from rl_go2.trainers.model_learning import DynamicsModel, ReplayBuffer, pack, unpack, quat_mul, conjugate
 from rl_go2.state import rotate_inverse
@@ -96,6 +98,37 @@ class SuperMimicTests(unittest.TestCase):
         torch.testing.assert_close(seen[0], seed['actor_observation'])
         torch.testing.assert_close(seen[1][:, 9:21], seed['sensor_history/joint_position/1'][:, 0] - env.task.default)
         torch.testing.assert_close(seen[-1][:, 21:33], seen[0][:, 21:33])
+
+    @unittest.skipUnless(torch.cuda.is_available(), 'requires CUDA Graph capture')
+    def test_noisy_actor_observation_supports_cuda_graph_capture(self):
+        config = load_experiment(ROOT / 'configs/experiments/curriculum_supermimic.yaml')
+        config = {**config, **config['courses'][2]['settings']}
+        channels = config['domain_randomization']['observation_noise']
+        channels['angular_velocity'].append({'type': 'gaussian', 'std': [0.01, 0.02, 0.03]})
+        channels['joint_position'].append({'type': 'bias', 'offset': 0.01})
+        device = torch.device('cuda', torch.cuda.current_device())
+        noise = ObservationNoise.from_config(config, device=device)
+        state = unpack(pack(FakeBackend(config).read_state()).to(device))
+        readings = SensorReadings.from_state(state)
+        action = torch.zeros_like(state.joint_position)
+        task = FlatWalkTask(config['task'], state.joint_position[0], 2, device, 0.02, config['seed'])
+        _, history = noise.apply(readings)
+
+        def observe():
+            noisy_readings, _ = noise.apply(readings, history)
+            return task.observe(state, action, readings=noisy_readings)
+
+        stream = torch.cuda.Stream(device=device)
+        stream.wait_stream(torch.cuda.current_stream(device))
+        with torch.cuda.stream(stream):
+            observe()
+        torch.cuda.current_stream(device).wait_stream(stream)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph, stream=stream):
+            observation = observe()
+        graph.replay()
+        self.assertEqual(observation.shape, (2, 45))
+        self.assertTrue(torch.isfinite(observation).all())
 
     def test_frame_delay_is_shared_by_sensors_and_fixed_until_reset(self):
         self.config['domain_randomization'] = {'observation_noise': {

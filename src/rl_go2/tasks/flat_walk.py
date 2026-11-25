@@ -40,6 +40,8 @@ class FlatWalkTask:
         self.device = device
         self.dt = dt
         self.commands = torch.zeros(num_envs, 3, device=device)
+        scales = config["observation_scales"]
+        self.observation_scales = {**scales, "commands": self.commands.new_tensor(scales["commands"])}
         # CPU RNG also works when the simulation uses Metal (MPS has no torch.Generator).
         self.generator = torch.Generator().manual_seed(seed)
         self.ranges = torch.tensor(config["command_ranges"], device=device).expand(num_envs, -1, -1).clone()
@@ -112,7 +114,7 @@ class FlatWalkTask:
             readings = SensorReadings.from_state(state)
         return policy_observation(readings.attitude, readings.angular_velocity, readings.joint_position,
                                   readings.joint_velocity, commands, previous_action, self.default,
-                                  self.config["observation_scales"], projected_gravity=readings.projected_gravity)
+                                  self.observation_scales, projected_gravity=readings.projected_gravity)
 
     def reward(self, state, action, previous_action, torque, context=None):
         commands = self.commands if context is None else context["commands"]

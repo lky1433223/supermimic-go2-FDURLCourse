@@ -41,7 +41,7 @@ def policy_observation(quaternion, angular_velocity_body, joint_position, joint_
     """Build the actor input, optionally using a precomputed noisy gravity observation."""
     if projected_gravity is None:
         projected_gravity = project_gravity(quaternion)
-    command_scales = commands.new_tensor(scales["commands"])
+    command_scales = torch.as_tensor(scales["commands"], dtype=commands.dtype, device=commands.device)
     return torch.cat((angular_velocity_body * scales["angular_velocity"],
                       projected_gravity, commands * command_scales,
                       (joint_position - default_position) * scales["joint_position"],

@@ -45,28 +45,28 @@ class AdditiveNoise(ABC):
 
 @dataclass(frozen=True)
 class GaussianNoise(AdditiveNoise):
-    std: AxisValues
+    std: torch.Tensor
 
     def error(self, reference: torch.Tensor) -> torch.Tensor:
-        return torch.randn_like(reference) * reference.new_tensor(self.std)
+        return torch.randn_like(reference) * self.std.to(reference)
 
 
 @dataclass(frozen=True)
 class UniformNoise(AdditiveNoise):
-    low: AxisValues
-    high: AxisValues
+    low: torch.Tensor
+    high: torch.Tensor
 
     def error(self, reference: torch.Tensor) -> torch.Tensor:
-        low, high = reference.new_tensor(self.low), reference.new_tensor(self.high)
+        low, high = self.low.to(reference), self.high.to(reference)
         return low + (high - low) * torch.rand_like(reference)
 
 
 @dataclass(frozen=True)
 class FixedBias(AdditiveNoise):
-    offset: AxisValues
+    offset: torch.Tensor
 
     def error(self, reference: torch.Tensor) -> torch.Tensor:
-        return reference.new_tensor(self.offset)
+        return self.offset.to(reference)
 
 
 @dataclass(frozen=True)
@@ -127,7 +127,8 @@ def _axis_values(value: object, width: int, field: str) -> AxisValues:
     return tuple(values)
 
 
-def _parse_noise(spec: object, width: int, path: str) -> SensorNoise:
+def _parse_noise(spec: object, width: int, path: str, *,
+                 device: torch.device | str, dtype: torch.dtype) -> SensorNoise:
     if not isinstance(spec, dict):
         raise ValueError(f'{path} must specify a noise type and its parameters')
     match spec:
@@ -135,15 +136,17 @@ def _parse_noise(spec: object, width: int, path: str) -> SensorNoise:
             values = _axis_values(std, width, f'{path}.std')
             if min(values) < 0:
                 raise ValueError(f'{path}.std must be nonnegative')
-            return GaussianNoise(values)
+            return GaussianNoise(torch.tensor(values, device=device, dtype=dtype))
         case {'type': 'uniform', 'low': low, 'high': high} if len(spec) == 3:
             lower = _axis_values(low, width, f'{path}.low')
             upper = _axis_values(high, width, f'{path}.high')
             if any(a > b for a, b in zip(lower, upper, strict=True)):
                 raise ValueError(f'{path}.low must be at most high on every axis')
-            return UniformNoise(lower, upper)
+            return UniformNoise(torch.tensor(lower, device=device, dtype=dtype),
+                                torch.tensor(upper, device=device, dtype=dtype))
         case {'type': 'bias', 'offset': offset} if len(spec) == 2:
-            return FixedBias(_axis_values(offset, width, f'{path}.offset'))
+            values = _axis_values(offset, width, f'{path}.offset')
+            return FixedBias(torch.tensor(values, device=device, dtype=dtype))
         case {'type': 'delay', 'steps': steps} if len(spec) == 2 and type(steps) is int and steps >= 0:
             return Delay(steps)
         case {'type': 'dropout', 'probability': p} if len(spec) == 2 and type(p) in (int, float) and 0 <= p <= 1:
@@ -160,8 +163,9 @@ class ObservationNoise:
         self.frame_delay = frame_delay
 
     @classmethod
-    def from_config(cls, config: dict) -> 'ObservationNoise | None':
-        """Read optional chains from domain_randomization.observation_noise."""
+    def from_config(cls, config: dict, *, device: torch.device | str = 'cpu',
+                    dtype: torch.dtype = torch.float32) -> 'ObservationNoise | None':
+        """Validate the noise chains and materialize their parameters before rollout."""
         domain = config.get('domain_randomization', {})
         if not isinstance(domain, dict):
             raise ValueError('domain_randomization must be a mapping')
@@ -177,7 +181,8 @@ class ObservationNoise:
             entries = spec.get(channel, [])
             if not isinstance(entries, list):
                 raise ValueError(f'observation_noise.{channel} must be an ordered list')
-            chains[channel] = tuple(_parse_noise(entry, width, f'observation_noise.{channel}[{index}]')
+            chains[channel] = tuple(_parse_noise(entry, width, f'observation_noise.{channel}[{index}]',
+                                                 device=device, dtype=dtype)
                                     for index, entry in enumerate(entries))
         return cls(chains, frame_delay) if frame_delay is not None or any(chains.values()) else None
 
