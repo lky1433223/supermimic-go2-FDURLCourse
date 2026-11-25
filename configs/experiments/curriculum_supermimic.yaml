@@ -9,25 +9,26 @@ robot_overrides:
 task: ../tasks/flat_walk.yaml
 backend: genesis
 device: cuda
-startup_gpu_reserve_gib: 76
+startup_gpu_reserve_gib: 70
+inductor_compile_threads: 48
 num_envs: 4096
 seed: 1
 curriculum:
   name: none
-# Provisional budgets in SuperMimic training iterations.
+# Per-course budgets in SuperMimic training iterations.
 courses:
   - config: ../courses/basic_motion.yaml
-    iterations: 20000
+    iterations: 10000
   - config: ../courses/expanded_motion.yaml
-    iterations: 20000
+    iterations: 10000
   - config: ../courses/observation_and_action.yaml
-    iterations: 20000
+    iterations: 10000
   - config: ../courses/body_and_friction.yaml
-    iterations: 20000
+    iterations: 10000
   - config: ../courses/point_push.yaml
-    iterations: 20000
+    iterations: 10000
   - config: ../courses/terrain.yaml
-    iterations: 20000
+    iterations: 10000
 trainer:
   name: supermimic
   collect_steps: 1

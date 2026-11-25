@@ -5,6 +5,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime
 import json
 import math
+import os
 from pathlib import Path
 import shlex
 import subprocess
@@ -56,6 +57,11 @@ def main():
         if trainer["name"] != "supermimic":
             parser.error("--driver-policy requires the SuperMimic trainer")
         trainer["driver_policy"] = str(args.driver_policy.resolve())
+    compile_threads = config.get("inductor_compile_threads")
+    if compile_threads is not None:
+        if type(compile_threads) is not int or compile_threads < 1:
+            parser.error("inductor_compile_threads must be a positive integer")
+        os.environ["TORCHINDUCTOR_COMPILE_THREADS"] = str(compile_threads)
     if trainer["name"] == "supermimic":
         from rl_go2.trainers.supermimic import train
     elif trainer["name"] == "ppo":
