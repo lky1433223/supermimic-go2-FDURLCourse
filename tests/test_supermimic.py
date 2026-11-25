@@ -17,6 +17,7 @@ from rl_go2.env import QuadrupedEnv
 from rl_go2.point_push import Go2PushGeometry, PointPushConfig, PointPushScheduler, PushState
 from rl_go2.trainers.model_learning import DynamicsModel, ReplayBuffer, pack, unpack, quat_mul, conjugate
 from rl_go2.state import rotate_inverse
+from rl_go2.tasks.flat_walk import FlatWalkTask
 from rl_go2.trainers.supermimic import Trainer, TrainConfig, imagined_rollout, frozen, lambda_returns, train
 from rl_go2.trainers.supermimic_init import initialize_weights
 from rl_go2.trainers.terrain_features import TerrainHeightScan
@@ -471,6 +472,26 @@ class SuperMimicTests(unittest.TestCase):
         torch.testing.assert_close(tr.previous_action, torch.zeros_like(action))
         self.assertTrue(tr.truncated.all())
         self.assertTrue((tr.next_state.position[:, 0] > env.state.position[:, 0]).all())
+
+    def test_course_command_sampling_matches_between_reset_and_imagination(self):
+        config = load_experiment(ROOT / 'configs/experiments/curriculum_supermimic.yaml')
+        for course in config['courses']:
+            self.assertEqual(course['settings']['task']['command_sampling'],
+                             {'stand_probability': 0.05, 'turn_in_place_probability': 0.05})
+        task = FlatWalkTask(config['task'], torch.zeros(12), 4, torch.device('cpu'), 0.02, seed=1)
+        draws = torch.tensor([
+            [.75, .75, .75, .049],  # stand
+            [.75, .75, .25, .051],  # turn
+            [.75, .75, .50, .099],  # turn, even when the yaw draw lands exactly at zero
+            [.75, .75, .75, .101],  # regular command
+        ])
+        expected = torch.tensor([[0, 0, 0], [0, 0, -.25], [0, 0, .5], [.625, .25, .25]])
+        with patch('torch.rand', return_value=draws):
+            task.reset(torch.arange(4), None, {})
+            torch.testing.assert_close(task.commands, expected)
+            context = {**task.context(), 'commands': torch.zeros_like(task.commands),
+                       'command_steps_left': torch.ones_like(task.command_steps_left)}
+            torch.testing.assert_close(task.advance_context(context, None)['commands'], expected)
 
     def test_dynamics_heading_equivariance_and_learning(self):
         trainer = self.make_trainer()

@@ -318,6 +318,7 @@ def _load_courses(config: dict, path: Path, robot_path: Path) -> None:
     task_type = get_task_type(task['name'])
     stages = []
     total = 0
+    task_fields = {'command_ranges', 'command_sampling'}
     for entry in entries:
         if (not isinstance(entry, dict) or entry.keys() != {'config', 'iterations'}
                 or not isinstance(entry['config'], str)
@@ -325,11 +326,10 @@ def _load_courses(config: dict, path: Path, robot_path: Path) -> None:
             raise ValueError('Each course needs a config path and a positive integer iteration budget')
         course_path = path.parent / entry['config']
         course = read_yaml(course_path)
-        unknown = course.keys() - {'command_ranges', 'domain_randomization', 'terrains'}
+        unknown = course.keys() - task_fields - {'domain_randomization', 'terrains'}
         if not course or unknown:
             raise ValueError(f'Invalid course settings in {course_path}: {sorted(unknown)}')
-        if 'command_ranges' in course:
-            task = {**task, 'command_ranges': course['command_ranges']}
+        task = {**task, **{key: course[key] for key in task_fields & course.keys()}}
         changes = course.get('domain_randomization', {})
         if not isinstance(changes, dict) or changes.keys() - {
             'foot_ground_friction', 'base_mass', 'base_com', 'observation_noise',
