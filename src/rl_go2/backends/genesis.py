@@ -1,5 +1,3 @@
-from collections.abc import Callable
-
 import torch
 
 from rl_go2.backends import LinkPointForces
@@ -14,7 +12,7 @@ from rl_go2.state import RobotState
 
 
 class GenesisBackend:
-    def __init__(self, config, viewer=False, *, before_build: Callable[[], None] | None = None):
+    def __init__(self, config, viewer=False):
         import genesis as gs
 
         bounds = joint_position_bounds(config["robot"])
@@ -57,8 +55,6 @@ class GenesisBackend:
                 surface = self.scene.add_entity(morph, material=gs.materials.Rigid(friction=entity.get("friction", 0.8)))
                 if friction_enabled:
                     surfaces.append(surface)
-        if before_build is not None:
-            before_build()
         self.scene.build(n_envs=self.num_envs)
         self.friction_ratios = None
         if friction_enabled:

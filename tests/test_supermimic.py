@@ -46,22 +46,45 @@ class SuperMimicTests(unittest.TestCase):
         config = TrainConfig()
         self.assertTrue(all((config.tf32, config.fused_adam, config.compile_training, config.cuda_graph)))
 
-    def test_startup_reservation_releases_once_and_rejects_insufficient_memory(self):
+    def test_startup_reservation_rejects_insufficient_memory(self):
         gib = 1024 ** 3
         with patch('torch.cuda.current_device', return_value=0), \
-                patch('torch.cuda.mem_get_info', return_value=(78 * gib, 80 * gib)) as memory, \
-                patch('torch.empty') as allocate, patch('torch.cuda.device'), \
-                patch('torch.cuda.empty_cache') as release_cache:
-            with reserve_startup_memory(76) as release:
-                allocate.assert_called_once_with((76 * gib,), device=torch.device('cuda:0'), dtype=torch.uint8)
-                release_cache.assert_not_called()
-                release()
-            release_cache.assert_called_once()
-            memory.return_value = (72 * gib, 80 * gib)
+                patch('torch.cuda.mem_get_info', return_value=(72 * gib, 80 * gib)):
             with self.assertRaisesRegex(RuntimeError, '72.00 of 80.00 GiB free'):
                 with reserve_startup_memory(76):
                     self.fail('Reservation must fail before the simulator starts')
-            allocate.assert_called_once()
+
+    @unittest.skipUnless(torch.cuda.is_available(), 'requires a CUDA device')
+    def test_startup_reservation_is_reused_by_current_cuda_pool(self):
+        from cuda.bindings import driver
+
+        success = driver.CUresult.CUDA_SUCCESS
+        device = torch.cuda.current_device()
+        stream = torch.cuda.current_stream(device)
+        handle = driver.CUstream(stream.cuda_stream)
+        attributes = driver.CUmemPool_attribute
+        initial = driver.cuDeviceGetMemPool(device)
+        with reserve_startup_memory(0.125):
+            status, pool = driver.cuDeviceGetMemPool(device)
+            self.assertEqual(status, success)
+            self.assertNotEqual(int(pool), int(initial[1]))
+            before = driver.cuMemPoolGetAttribute(pool, attributes.CU_MEMPOOL_ATTR_RESERVED_MEM_CURRENT)
+            self.assertEqual(before[0], success)
+            self.assertGreaterEqual(before[1], 128 * 1024 ** 2)
+            status, ptr = driver.cuMemAllocAsync(64 * 1024 ** 2, handle)
+            self.assertEqual(status, success)
+            try:
+                stream.synchronize()
+                used = driver.cuMemPoolGetAttribute(pool, attributes.CU_MEMPOOL_ATTR_USED_MEM_CURRENT)
+                self.assertEqual(used, (success, 64 * 1024 ** 2))
+                self.assertEqual(driver.cuMemPoolGetAttribute(pool, attributes.CU_MEMPOOL_ATTR_RESERVED_MEM_CURRENT),
+                                 before)
+            finally:
+                self.assertEqual(driver.cuMemFreeAsync(ptr, handle), (success,))
+                stream.synchronize()
+        status, restored = driver.cuDeviceGetMemPool(device)
+        self.assertEqual(status, success)
+        self.assertEqual(int(restored), int(initial[1]))
 
     def test_sensor_noise_history_continues_in_imagination(self):
         self.config['domain_randomization'] = {'observation_noise': {
