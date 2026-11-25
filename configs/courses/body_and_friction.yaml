@@ -2,12 +2,12 @@ domain_randomization:
   base_com:
     enabled: true
     offset_ranges_m:
-      x: [-0.01, 0.01]
-      y: [-0.03, 0.03]
-      z: [-0.01, 0.01]
+      x: [-0.05, 0.05]
+      y: [-0.05, 0.05]
+      z: [-0.05, 0.05]
   base_mass:
     enabled: true
-    scale_range: [0.9, 1.1]
+    scale_range: [0.85, 1.5]
   foot_ground_friction:
     enabled: true
     base_ranges:

@@ -13,7 +13,7 @@ from rl_go2.state import RobotState, rotate_inverse, quat_mul
 
 @dataclass(frozen=True)
 class PointPushConfig:
-    """Validated sampling ranges in seconds, degrees, and newtons."""
+    """Validated sampling ranges for point forces and their durations."""
 
     first_wait: tuple[float, float]
     gap: tuple[float, float]
@@ -25,6 +25,7 @@ class PointPushConfig:
     elevation: tuple[float, float]
     overlap_probability: float
     overlap_delay: tuple[int, int]
+    base_max_impulse_ns: float | None = None
 
     @classmethod
     def from_config(cls, config: dict) -> "PointPushConfig | None":
@@ -54,6 +55,9 @@ class PointPushConfig:
         delay = _bounds(overlap.get("second_start_delay_steps"), "second_start_delay_steps", 1)
         if not all(type(value) is int for value in delay):
             raise ValueError("point_push second_start_delay_steps must be integers")
+        base_impulse = base.get("max_impulse_ns")
+        if base_impulse is not None and (not _finite_number(base_impulse) or base_impulse <= 0):
+            raise ValueError("point_push base max_impulse_ns must be finite and positive")
         return cls(
             _bounds(section.get("first_wait_seconds"), "first_wait_seconds", 0),
             _bounds(section.get("gap_seconds"), "gap_seconds", 0),
@@ -65,6 +69,7 @@ class PointPushConfig:
             _bounds(direction.get("elevation_range_deg"), "elevation_range_deg", -90, 90),
             _probability(overlap.get("probability"), "overlap probability"),
             delay,
+            base_impulse,
         )
 
 
@@ -87,7 +92,7 @@ def _bounds(value: object, name: str, minimum: float, maximum: float = math.inf)
 
 
 class PushState(NamedTuple):
-    """Per-environment group clock and per-link point-load state in model link order."""
+    """Per-environment group clock and per-link durations and loads in model link order."""
 
     wait: torch.Tensor
     delay: torch.Tensor
@@ -167,6 +172,11 @@ class PointPushScheduler:
         self.first_wait = tuple(round(seconds / dt) for seconds in spec.first_wait)
         self.gap = tuple(round(seconds / dt) for seconds in spec.gap)
         self.idle = -self.duration_steps[1]
+        self.base_impulse_per_step_n = None
+        if spec.base_max_impulse_ns is not None:
+            self.base_impulse_per_step_n = spec.base_max_impulse_ns / dt
+            if self.base_impulse_per_step_n < spec.force_ranges[0][1]:
+                raise ValueError("point_push base max_impulse_ns must allow the maximum force for one control step")
         foot_probability = (1 - spec.base_probability) / 4
         self.link_weights = geometry.base_half_size.new_tensor([spec.base_probability, *([foot_probability] * 4)])
         if spec.overlap_probability and spec.overlap_delay[1] >= self.duration_steps[0]:
@@ -179,7 +189,7 @@ class PointPushScheduler:
         wait = torch.where(torch.rand_like(positions[:, 0]) < self.spec.clean_probability, -1, wait)
         delay = torch.full((batch, 5), self.idle, dtype=torch.long, device=positions.device)
         empty = positions.new_zeros((batch, 5, 3))
-        return PushState(wait, delay, torch.zeros_like(wait), empty, empty)
+        return PushState(wait, delay, torch.zeros_like(delay), empty, empty)
 
     def _schedule_group(self, state: PushState) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         due = state.wait == 0
@@ -202,8 +212,8 @@ class PointPushScheduler:
             sampled_duration = torch.full_like(state.wait, minimum)
         else:
             sampled_duration = torch.randint(minimum, maximum + 1, state.wait.shape, device=device)
-        duration = torch.where(due, sampled_duration, state.duration_steps)
-        wait = torch.where(due, gap + duration + extra, state.wait)
+        duration = torch.where(due[:, None], sampled_duration[:, None], state.duration_steps)
+        wait = torch.where(due, gap + sampled_duration + extra, state.wait)
         return wait, torch.where(due[:, None], delay, state.delay), duration
 
     @staticmethod
@@ -212,23 +222,31 @@ class PointPushScheduler:
         threshold = torch.rand_like(cumulative[:, :1]) * cumulative[:, -1:]
         return (threshold >= cumulative).sum(dim=1, keepdim=True).clamp_max(weights.shape[1] - 1)
 
-    def _sample_forces(self, reference: torch.Tensor) -> torch.Tensor:
+    def _sample_forces(self, reference: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         azimuth = _uniform_like(reference[..., 0], self.spec.azimuth).deg2rad()
         elevation = _uniform_like(reference[..., 0], self.spec.elevation).deg2rad()
         horizontal = elevation.cos()
         direction = torch.stack((horizontal * azimuth.cos(), horizontal * azimuth.sin(), elevation.sin()), dim=-1)
         magnitude = torch.cat((_uniform_like(azimuth[:, :1], self.spec.force_ranges[0]),
                                _uniform_like(azimuth[:, 1:], self.spec.force_ranges[1])), dim=1)
-        return direction * magnitude[..., None]
+        return direction * magnitude[..., None], magnitude
 
     def prepare(self, state: PushState, link_quat: torch.Tensor) -> PushState:
         """Sample loads starting on this control step and preserve ongoing loads."""
         wait, delay, duration = self._schedule_group(state)
-        starting = (delay == 0)[..., None]
-        force = self._sample_forces(state.forces)
+        starting = delay == 0
+        force, magnitude = self._sample_forces(state.forces)
+        if self.base_impulse_per_step_n is not None:
+            # Round down to whole control steps so shortening never exceeds the cap.
+            base_duration = torch.minimum(duration[:, 0], self.base_impulse_per_step_n / magnitude[:, 0]).long()
+            base_duration = torch.where(starting[:, 0], base_duration, duration[:, 0])
+            limited = torch.cat((base_duration[:, None], duration[:, 1:]), dim=1)
+            # The next group's gap starts after the last load, including any overlapping foot push.
+            wait = wait - (delay + duration).amax(dim=1) + (delay + limited).amax(dim=1)
+            duration = limited
         point = self.geometry.sample_points(rotate_inverse(link_quat, force))
-        return PushState(wait, delay, duration, torch.where(starting, point, state.points),
-                         torch.where(starting, force, state.forces))
+        return PushState(wait, delay, duration, torch.where(starting[..., None], point, state.points),
+                         torch.where(starting[..., None], force, state.forces))
 
     def advance(self, state: PushState) -> PushState:
         """Advance by one control step without mutating the rollout seed."""
@@ -237,7 +255,7 @@ class PointPushScheduler:
 
     def loads(self, state: PushState) -> LinkPointForces:
         """Return local points and active world forces in model link order."""
-        active = ((state.delay <= 0) & (state.delay > -state.duration_steps[:, None]))[..., None]
+        active = ((state.delay <= 0) & (state.delay > -state.duration_steps))[..., None]
         return LinkPointForces(state.points, torch.where(active, state.forces, 0.0))
 
     def wrenches(self, state: PushState, link_quat: torch.Tensor) -> torch.Tensor:

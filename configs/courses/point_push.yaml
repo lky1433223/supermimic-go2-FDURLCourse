@@ -9,9 +9,10 @@ domain_randomization:
       base:
         probability: 0.80
         force_range_n: [5.0, 200.0]
+        max_impulse_ns: 20.0
       foot:
         probability: 0.20
-        force_range_n: [2.0, 8.0]   # The four feet are sampled uniformly.
+        force_range_n: [2.0, 20.0]  # The four feet are sampled uniformly.
     direction:
       azimuth_range_deg: [0.0, 360.0]
       elevation_range_deg: [-25.0, 25.0]

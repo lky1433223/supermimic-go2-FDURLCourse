@@ -293,7 +293,7 @@ class SuperMimicTests(unittest.TestCase):
         link_quat[..., 0] = 1
         state = scheduler.prepare(state, link_quat)
         state = PushState.from_replay(state.replay_fields())
-        expected = state.duration_steps
+        expected = state.duration_steps.amax(dim=1)
         self.assertEqual(expected.min().item(), 5)
         self.assertEqual(expected.max().item(), 15)
         torch.testing.assert_close(state.wait, expected + 50)
@@ -303,6 +303,31 @@ class SuperMimicTests(unittest.TestCase):
             active_steps += scheduler.loads(state).force_world_n.ne(0).any(dim=(1, 2))
             state = scheduler.prepare(scheduler.advance(state), link_quat)
         torch.testing.assert_close(active_steps, expected)
+
+    def test_course_base_push_impulse_caps_duration_in_whole_steps(self):
+        config = load_experiment(ROOT / 'configs/experiments/curriculum_supermimic.yaml')
+        config.update(config['courses'][4]['settings'])
+        push = config['domain_randomization']['point_push']
+        push.update(first_wait_seconds=[0, 0], gap_seconds=[1, 1],
+                    no_push_episode_probability=0, duration_seconds=0.3)
+        push['targets']['base']['probability'] = 1
+        push['targets']['foot']['probability'] = 0
+        geometry = Go2PushGeometry(config, FOOT_NAMES, torch.device('cpu'))
+        link_quat = torch.zeros(1, 5, 4)
+        link_quat[..., 0] = 1
+        dt = 0.02
+        for force, expected_steps in ((200, 5), (160, 6), (50, 15)):
+            with self.subTest(force=force):
+                push['targets']['base']['force_range_n'] = [force, force]
+                scheduler = PointPushScheduler(PointPushConfig.from_config(config), dt, geometry)
+                state = scheduler.prepare(scheduler.reset(torch.zeros(1, 3)), link_quat)
+                self.assertEqual(state.wait.item(), 50 + expected_steps)
+                state = PushState.from_replay(state.replay_fields())
+                impulse = 0.0
+                for _ in range(16):
+                    impulse += scheduler.loads(state).force_world_n[0, 0].norm().item() * dt
+                    state = scheduler.prepare(scheduler.advance(state), link_quat)
+                self.assertAlmostEqual(impulse, force * expected_steps * dt, places=5)
 
     @unittest.skipUnless(os.environ.get('RL_GO2_TEST_GENESIS') == '1', 'opt-in Genesis CPU kernel compilation')
     def test_genesis_scheduled_pushes_continue_in_imagination_and_reset(self):
