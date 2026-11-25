@@ -1,4 +1,3 @@
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -66,7 +65,7 @@ class PhysicsBackend(Protocol):
     def close(self) -> None: ...
 
 
-def make_backend(config, viewer=False, *, before_genesis_build: Callable[[], None] | None = None):
+def make_backend(config, viewer=False):
     name = config["backend"]
     if name == "isaac":
         raise NotImplementedError("Isaac Sim backend is reserved; no runtime is installed")
@@ -81,7 +80,7 @@ def make_backend(config, viewer=False, *, before_genesis_build: Callable[[], Non
     if name == "genesis":
         from .genesis import GenesisBackend
 
-        return GenesisBackend(config, viewer=viewer, before_build=before_genesis_build)
+        return GenesisBackend(config, viewer=viewer)
 
     from .mujoco import MujocoBackend
 

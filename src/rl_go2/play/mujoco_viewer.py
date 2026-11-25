@@ -13,6 +13,10 @@ from rl_go2.mujoco_visuals import brighten_scene
 from .controls import Controls
 from .hud import MARGIN, PANEL, WIDTH, layout_hud
 
+# These groups match the visual and collision classes in the Go2 MJCF.
+VISUAL_GEOM_GROUP = 2
+COLLISION_GEOM_GROUP = 3
+
 
 def playback_model(model: mujoco.MjModel) -> mujoco.MjModel:
     """Make a render-only copy with the brighter evaluation-video lighting."""
@@ -68,6 +72,11 @@ class MujocoPlayViewer:
         backend.set_interactive_force_callback(self.apply_forces)
 
     def _on_key(self, window, key: int, scancode: int, action: int, mods: int) -> None:
+        if key == glfw.KEY_C and action == glfw.PRESS:
+            show_collision = not self.options.geomgroup[COLLISION_GEOM_GROUP]
+            self.options.geomgroup[COLLISION_GEOM_GROUP] = show_collision
+            self.options.geomgroup[VISUAL_GEOM_GROUP] = not show_collision
+            return
         mapping = {glfw.KEY_W: 'w', glfw.KEY_A: 'a', glfw.KEY_S: 's', glfw.KEY_D: 'd',
                    glfw.KEY_UP: 'up', glfw.KEY_DOWN: 'down', glfw.KEY_LEFT: 'left',
                    glfw.KEY_RIGHT: 'right', glfw.KEY_SPACE: 'stop', glfw.KEY_P: 'pause',
