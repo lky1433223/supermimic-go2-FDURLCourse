@@ -1,0 +1,13 @@
+domain_randomization:
+  action_delay_steps: [0, 2]  # Uniform per episode, independent of sensor delay (0, 20 or 40 ms).
+  # Unitree Go2 RL Lab uniform-noise bounds, before actor scaling.
+  observation_noise:
+    frame_delay_steps: [0, 1]  # Uniform per episode, shared across sensors (0 or 20 ms).
+    angular_velocity:
+      - {type: uniform, low: -0.20, high: 0.20}
+    projected_gravity:
+      - {type: uniform, low: -0.05, high: 0.05}
+    joint_position:
+      - {type: uniform, low: -0.01, high: 0.01}
+    joint_velocity:
+      - {type: uniform, low: -1.50, high: 1.50}

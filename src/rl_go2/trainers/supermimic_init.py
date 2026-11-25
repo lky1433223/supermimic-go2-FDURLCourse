@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 import torch
 from torch.nn import functional as F
 
-from rl_go2.config import base_com_offset_ranges, base_mass_scale_range, foot_friction_ranges
+from rl_go2.config import base_com_offset_ranges, base_mass_scale_range, config_at_iteration, foot_friction_ranges
 
 if TYPE_CHECKING:
     from rl_go2.trainers.supermimic import Trainer
@@ -15,10 +15,10 @@ if TYPE_CHECKING:
 
 def initialize_weights(trainer: "Trainer", checkpoint: Path) -> None:
     """Initialize networks and normalizers, adding zero-weight physics inputs if needed."""
-    _validate_source_config(checkpoint, trainer.env.config)
     saved = torch.load(checkpoint, map_location=trainer.env.device, weights_only=True)
     if saved.get("schema") != "rl-go2.supermimic/v2":
         raise ValueError("Expected a SuperMimic v2 checkpoint")
+    _validate_source_config(checkpoint, trainer.env.config, saved.get('iteration'))
 
     model_state = dict(saved["world_model"])
     target_state = trainer.model.state_dict()
@@ -36,11 +36,11 @@ def initialize_weights(trainer: "Trainer", checkpoint: Path) -> None:
     print(f"Initialized SuperMimic weights from {checkpoint}; optimizers and replay start fresh.", flush=True)
 
 
-def _validate_source_config(checkpoint: Path, current: dict) -> None:
+def _validate_source_config(checkpoint: Path, current: dict, iteration: int | None) -> None:
     source = checkpoint.parent / "config.json"
     if not source.is_file():
         source = checkpoint.parent / "remote-config.json"
-    original = json.loads(source.read_text())
+    original = config_at_iteration(json.loads(source.read_text()), iteration)
     for key in ("base_link", "joint_names", "default_joint_positions", "kp", "kd", "torque_limits",
                 "action_scale", "action_clip", "control_decimation", "joint_position_limits",
                 "joint_limit_margin"):

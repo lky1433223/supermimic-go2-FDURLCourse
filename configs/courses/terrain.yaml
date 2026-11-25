@@ -1,0 +1,24 @@
+terrains:
+  flat:
+    weight: 1
+  step:
+    weight: 1
+    height_range_m: [0.02, 0.06]
+    length_m: 0.60
+    width_m: 1.20
+  ramp:
+    weight: 1
+    slope_range_deg: [5.0, 10.0]
+    run_m: 0.80
+    platform_length_m: 0.60
+    width_m: 1.20
+  rough_ground:
+    weight: 1
+    map_count: 8
+    seed: 201
+    rows: 5
+    columns: 4
+    tile_size_m: 0.30
+    height_increment_m: 0.01
+    max_height_level: 2
+    max_adjacent_delta_levels: 1

@@ -104,6 +104,8 @@ def main():
         if value is not None:
             config[key] = value
     if args.iterations is not None:
+        if config.get("courses") and args.iterations > config["trainer"]["iterations"]:
+            parser.error("--iterations cannot exceed the configured course budget")
         config["trainer"]["iterations"] = args.iterations
     if args.driver_policy is not None:
         if config["trainer"]["name"] != "supermimic":

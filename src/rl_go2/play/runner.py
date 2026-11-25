@@ -6,7 +6,7 @@ import time
 
 import torch
 
-from rl_go2.config import REPO_ROOT, resolve_run_asset
+from rl_go2.config import REPO_ROOT, config_at_iteration, resolve_run_asset
 from rl_go2.env import QuadrupedEnv
 from rl_go2.evaluation.conditions import NOMINAL_SAMPLE, NOMINAL_SLIDING
 from rl_go2.evaluation.runner import load_policy
@@ -22,6 +22,8 @@ def load_inputs(args: argparse.Namespace) -> tuple[dict, torch.nn.Module, Path, 
     if (training / 'training').is_dir():
         training /= 'training'
     config = json.loads((training / 'config.json').read_text())
+    policy, path, iteration = load_policy(args, training, config, require_iteration=False)
+    config = config_at_iteration(config, iteration)
     for entity in config['scene']['entities']:
         if 'file' in entity:
             entity['file'] = resolve_run_asset(entity['file'])
@@ -43,7 +45,6 @@ def load_inputs(args: argparse.Namespace) -> tuple[dict, torch.nn.Module, Path, 
     # Interactive commands are supplied every step. Keep the task's periodic
     # sampling from replacing the command during a step or normal timeout.
     config['task'].update(command_resample_seconds=1e9, episode_seconds=1e9)
-    policy, path, iteration = load_policy(args, training, config, require_iteration=False)
     return config, policy, path, iteration
 
 

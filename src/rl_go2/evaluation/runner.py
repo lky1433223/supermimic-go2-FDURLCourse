@@ -7,7 +7,7 @@ from pathlib import Path
 import socket
 import sys
 
-from rl_go2.config import FLAT_SCENE_PATH, load_scene, resolve_run_asset, validate_scene_robot
+from rl_go2.config import FLAT_SCENE_PATH, config_at_iteration, load_scene, resolve_run_asset, validate_scene_robot
 
 from .executor import execute_plan, summarize_plan
 from .push_events import build_push_events
@@ -89,6 +89,9 @@ def run_evaluation(args, task):
     output_root = run.parent if run.name == 'training' else run
     config_path = training / 'config.json'
     config = json.loads(config_path.read_text())
+    torch.set_num_threads(2)
+    policy, weight_path, iteration = load_policy(args, training, config)
+    config = config_at_iteration(config, iteration)
     config.update(backend=args.backend, device=args.device, num_envs=args.num_envs, curriculum={'name': 'none'})
     plan = task.build_plan(args.steps)
     plan = plan.select_trials(conditions=args.condition, motions=args.trial)
@@ -102,8 +105,6 @@ def run_evaluation(args, task):
     if plan.episode_seconds is not None:
         config['task'].update(episode_seconds=plan.episode_seconds, command_resample_seconds=plan.episode_seconds)
 
-    torch.set_num_threads(2)
-    policy, weight_path, iteration = load_policy(args, training, config)
     with weight_path.open('rb') as stream:
         digest = file_digest(stream, 'sha256').hexdigest()
     seeds = args.seeds or list(task.default_seeds)

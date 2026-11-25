@@ -1,0 +1,20 @@
+domain_randomization:
+  point_push:
+    enabled: true
+    no_push_episode_probability: 0.10
+    first_wait_seconds: [3.0, 6.0]  # Begins at reset.
+    gap_seconds: [3.0, 6.0]         # Begins after the last force ends.
+    duration_seconds: [0.10, 0.30]
+    targets:
+      base:
+        probability: 0.80
+        force_range_n: [5.0, 200.0]
+      foot:
+        probability: 0.20
+        force_range_n: [2.0, 8.0]   # The four feet are sampled uniformly.
+    direction:
+      azimuth_range_deg: [0.0, 360.0]
+      elevation_range_deg: [-25.0, 25.0]
+    overlap:
+      probability: 0.0
+      second_start_delay_steps: [2, 6]

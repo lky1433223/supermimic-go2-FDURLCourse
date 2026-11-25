@@ -653,61 +653,99 @@ def cuda_matmul_tf32(enabled):
 
 def train(config, output):
     from rl_go2.trainers import save_run_spec
-    from rl_go2.trainers.supermimic_init import initialize_weights
+
     cfg = TrainConfig(**config['trainer'])
     cfg.validate()
+    courses = config.get('courses')
+    if courses and cfg.iterations > courses[-1]['end_iteration']:
+        raise ValueError('Training iterations exceed the total course budget')
     torch.manual_seed(config['seed'])
     # Metadata creation rejects existing directories before creating a simulator.
     save_run_spec(config, output)
     output = Path(output)
+    with (output / 'metrics.jsonl').open('w') as log:
+        if courses:
+            _train_courses(config, cfg, output, log)
+        else:
+            _train_stage(config, cfg, output, log, 1, cfg.iterations)
+
+
+def _train_courses(config, cfg: TrainConfig, output: Path, log) -> None:
+    first = 1
+    progress = (0, 0)
+    previous = None
+    for index, course in enumerate(config['courses'], start=1):
+        last = min(course['end_iteration'], cfg.iterations)
+        print(f"Course {index}: {course['name']} (iterations {first}–{last})", flush=True)
+        progress, previous = _train_stage(
+            {**config, **course['settings']}, cfg, output, log, first, last,
+            progress=progress, previous=previous, course_index=index,
+        )
+        if last == cfg.iterations:
+            break
+        first = last + 1
+
+
+def _train_stage(config, cfg: TrainConfig, output: Path, log, first: int, last: int, *,
+                 progress=(0, 0), previous=None, course_index: int | None = None):
+    from rl_go2.trainers.supermimic_courses import continue_from_course, input_layouts
+    from rl_go2.trainers.supermimic_init import initialize_weights
+
+    environment_steps, policy_updates = progress
     env = QuadrupedEnv(config, record_transitions=True)
     with closing(env), cuda_matmul_tf32(cfg.tf32 and env.device.type == 'cuda'):
+        env.environment_steps = environment_steps
         trainer = Trainer(env, cfg)
-        if cfg.init_checkpoint is not None:
+        if previous is not None:
+            continue_from_course(trainer, output / f'model_{first - 1}.pt', previous)
+        elif cfg.init_checkpoint is not None:
             initialize_weights(trainer, Path(cfg.init_checkpoint))
         if not cfg.uses_official_schedule:
             while trainer.replay.size < cfg.model_window:
                 trainer.collect(update_actor_norm=cfg.world_model_warmup_iterations == 0)
         replay_budget = env.num_envs * cfg.collect_steps * OFFICIAL_REPLAY_RATIO
         update_cost = cfg.model_updates * cfg.model_batch * cfg.model_window
-        policy_updates = 0
-        with (output / 'metrics.jsonl').open('w') as log:
-            for iteration in range(1, cfg.iterations + 1):
-                start = perf_counter()
-                model_only = iteration <= cfg.world_model_warmup_iterations
-                stats = trainer.collect(update_actor_norm=not model_only)
-                stats.update(collect_seconds=perf_counter() - start, model_seconds=0.0,
-                             actor_seconds=0.0, critic_seconds=0.0)
-                updates = 1
-                if cfg.uses_official_schedule:
-                    step = iteration - 1
-                    # Official scheduling starts with a tick at step zero. Subsequent
-                    # ticks track the accumulated update budget, even before replay is ready.
-                    updates = (1 if step == 0 else
-                               step * replay_budget // update_cost - (step - 1) * replay_budget // update_cost)
-                    if trainer.replay.size < cfg.model_window:
-                        updates = 0
-                for _ in range(updates):
-                    model_start = perf_counter()
-                    stats['model_loss'] = trainer.fit_model()
-                    stats['model_seconds'] += perf_counter() - model_start
-                    if model_only:
-                        continue
-                    if iteration > cfg.warmup_iterations:
-                        policy = trainer.improve_policy()
-                        policy['actor_seconds'] += stats['actor_seconds']
-                        policy['critic_seconds'] += stats['critic_seconds']
-                        stats.update(policy)
-                        policy_updates += 1
-                    elif cfg.behavior_updates:
-                        actor_start = perf_counter()
-                        stats['behavior_loss'] = trainer.warmup_actor()
-                        stats['actor_seconds'] += perf_counter() - actor_start
-                stats.update(iteration=iteration, environment_steps=env.environment_steps,
-                             policy_updates=policy_updates)
-                log.write(json.dumps(stats, allow_nan=False) + '\n')
-                log.flush()
-                if iteration % cfg.log_interval == 0 or iteration == cfg.iterations:
-                    print(json.dumps(stats, allow_nan=False), flush=True)
-                if iteration % cfg.save_interval == 0 or iteration == cfg.iterations:
-                    trainer.save(output, iteration)
+        for iteration in range(first, last + 1):
+            start = perf_counter()
+            model_only = iteration <= cfg.world_model_warmup_iterations
+            stats = trainer.collect(update_actor_norm=not model_only)
+            stats.update(collect_seconds=perf_counter() - start, model_seconds=0.0,
+                         actor_seconds=0.0, critic_seconds=0.0)
+            updates = 1
+            if cfg.uses_official_schedule:
+                step = iteration - 1
+                # Official scheduling starts with a tick at step zero. Subsequent
+                # ticks track the accumulated update budget, even before replay is ready.
+                updates = (1 if step == 0 else
+                           step * replay_budget // update_cost - (step - 1) * replay_budget // update_cost)
+                if trainer.replay.size < cfg.model_window:
+                    updates = 0
+            for _ in range(updates):
+                model_start = perf_counter()
+                stats['model_loss'] = trainer.fit_model()
+                stats['model_seconds'] += perf_counter() - model_start
+                if model_only:
+                    continue
+                if iteration > cfg.warmup_iterations:
+                    policy = trainer.improve_policy()
+                    policy['actor_seconds'] += stats['actor_seconds']
+                    policy['critic_seconds'] += stats['critic_seconds']
+                    stats.update(policy)
+                    policy_updates += 1
+                elif cfg.behavior_updates:
+                    actor_start = perf_counter()
+                    stats['behavior_loss'] = trainer.warmup_actor()
+                    stats['actor_seconds'] += perf_counter() - actor_start
+            stats.update(iteration=iteration, environment_steps=env.environment_steps,
+                         policy_updates=policy_updates)
+            if course_index is not None:
+                stats['course_stage'] = course_index
+            log.write(json.dumps(stats, allow_nan=False) + '\n')
+            log.flush()
+            if iteration % cfg.log_interval == 0 or iteration == last:
+                print(json.dumps(stats, allow_nan=False), flush=True)
+            if iteration % cfg.save_interval == 0 or iteration == last:
+                trainer.save(output, iteration)
+
+        layouts = input_layouts(trainer) if last < cfg.iterations else None
+        return (env.environment_steps, policy_updates), layouts

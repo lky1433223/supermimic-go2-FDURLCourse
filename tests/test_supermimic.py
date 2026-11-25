@@ -421,6 +421,31 @@ class SuperMimicTests(unittest.TestCase):
         self.assertEqual(metrics[-1]['policy_updates'], 2)
         self.assertEqual(shuffle.call_count, 2)
 
+    def test_curriculum_preserves_optimizer_progress_across_six_courses(self):
+        config = load_experiment(ROOT / 'configs/experiments/curriculum_supermimic.yaml')
+        config.update(backend='mujoco', device='cpu', num_envs=1)
+        self.cfg.iterations = 12
+        self.cfg.warmup_iterations = 0
+        self.cfg.bootstrap_weight = 1.0
+        self.cfg.condition_on_link_wrenches = True
+        config['trainer'] = asdict(self.cfg)
+        for index, course in enumerate(config['courses'], start=1):
+            course.update(iterations=2, end_iteration=2 * index)
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'train'
+            train(config, output)
+            metrics = [json.loads(line) for line in (output / 'metrics.jsonl').read_text().splitlines()]
+            checkpoints = [torch.load(output / f'model_{iteration}.pt', weights_only=True)
+                           for iteration in range(2, 13, 2)]
+        self.assertEqual([row['course_stage'] for row in metrics], [1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6])
+        self.assertEqual([row['environment_steps'] for row in metrics], list(range(4, 49, 4)))
+        for name in ('actor', 'model', 'critic'):
+            steps = [saved[f'{name}_optimizer']['state'][0]['step'].item() for saved in checkpoints]
+            self.assertTrue(all(left < right for left, right in zip(steps, steps[1:])), (name, steps))
+        widths = [saved['world_model']['net.0.weight'].shape[1] for saved in checkpoints]
+        self.assertEqual(widths, [77, 77, 77, 93, 93, 147])
+
     def test_context_matches_real_resample_and_reward(self):
         trainer = self.make_trainer()
         env = trainer.env

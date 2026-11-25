@@ -1,0 +1,2 @@
+# Ranges for vx (m/s), vy (m/s), and yaw rate (rad/s).
+command_ranges: [[-1.0, 2.0], [-1.0, 1.0], [-1.0, 1.0]]

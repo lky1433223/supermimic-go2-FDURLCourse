@@ -269,6 +269,14 @@ def load_experiment(path):
         raise ValueError("control_decimation must be a positive integer")
     if robot["action_clip"] <= 0 or robot["action_scale"] <= 0:
         raise ValueError("action_clip and action_scale must be positive")
+    if 'courses' in config:
+        _load_courses(config, path, robot_path)
+    else:
+        _validate_task_and_randomization(config)
+    return config
+
+
+def _validate_task_and_randomization(config: dict) -> None:
     task = config["task"]
     validate_task_name(task["name"])
     if not math.isfinite(task["episode_seconds"]) or task["episode_seconds"] <= 0:
@@ -291,4 +299,64 @@ def load_experiment(path):
                              or not config['trainer'].get('condition_on_link_wrenches')
                              or task['name'] != 'flat_walk'):
         raise ValueError('point_push requires SuperMimic flat_walk with condition_on_link_wrenches')
+
+
+def _load_courses(config: dict, path: Path, robot_path: Path) -> None:
+    """Resolve course files into cumulative, self-contained stage settings."""
+    from rl_go2.tasks import get_task_type
+    from rl_go2.training_scene import build_training_scene
+
+    if (config['trainer']['name'] != 'supermimic' or config['task']['name'] != 'flat_walk'
+            or config['curriculum']['name'] != 'none'):
+        raise ValueError('courses require SuperMimic flat_walk and curriculum.name: none')
+    if 'iterations' in config['trainer'] or 'domain_randomization' in config:
+        raise ValueError('Set iteration budgets in courses entries and domain randomization in course files')
+    entries = config['courses']
+    if not isinstance(entries, list) or not entries:
+        raise ValueError('courses must be a nonempty list of config and iterations entries')
+    task, scene, domain = config['task'], config['scene'], {}
+    task_type = get_task_type(task['name'])
+    stages = []
+    total = 0
+    for entry in entries:
+        if (not isinstance(entry, dict) or entry.keys() != {'config', 'iterations'}
+                or not isinstance(entry['config'], str)
+                or type(entry['iterations']) is not int or entry['iterations'] < 1):
+            raise ValueError('Each course needs a config path and a positive integer iteration budget')
+        course_path = path.parent / entry['config']
+        course = read_yaml(course_path)
+        unknown = course.keys() - {'command_ranges', 'domain_randomization', 'terrains'}
+        if not course or unknown:
+            raise ValueError(f'Invalid course settings in {course_path}: {sorted(unknown)}')
+        if 'command_ranges' in course:
+            task = {**task, 'command_ranges': course['command_ranges']}
+        changes = course.get('domain_randomization', {})
+        if not isinstance(changes, dict) or changes.keys() - {
+            'foot_ground_friction', 'base_mass', 'base_com', 'observation_noise',
+            'action_delay_steps', 'point_push',
+        }:
+            raise ValueError(f'Invalid domain_randomization in {course_path}')
+        domain = {**domain, **changes}
+        if 'terrains' in course:
+            spec = {'sim_options': scene['sim_options'], 'terrains': course['terrains']}
+            scene = build_training_scene(spec, config['robot'], robot_path, config['seed'])
+            scene = validate_scene(scene, path)
+            validate_scene_robot(scene, config['robot'])
+        total += entry['iterations']
+        stage = {'name': course_path.stem, 'end_iteration': total, 'iterations': entry['iterations'],
+                 'settings': {'task': task, 'scene': scene, 'domain_randomization': domain}}
+        task_type.validate_config(task, config['robot'])
+        _validate_task_and_randomization({**config, **stage['settings']})
+        stages.append(stage)
+    config.update(stages[0]['settings'])
+    config['courses'] = stages
+    config['trainer']['iterations'] = total
+
+
+def config_at_iteration(config: dict, iteration: int | None) -> dict:
+    """Return the effective settings for a saved checkpoint's last training iteration."""
+    if iteration is not None:
+        for stage in config.get('courses', ()):
+            if iteration <= stage['end_iteration']:
+                return {**config, **stage['settings']}
     return config

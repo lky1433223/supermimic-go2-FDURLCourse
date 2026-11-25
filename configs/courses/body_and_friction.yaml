@@ -1,0 +1,18 @@
+domain_randomization:
+  base_com:
+    enabled: true
+    offset_ranges_m:
+      x: [-0.01, 0.01]
+      y: [-0.03, 0.03]
+      z: [-0.01, 0.01]
+  base_mass:
+    enabled: true
+    scale_range: [0.9, 1.1]
+  foot_ground_friction:
+    enabled: true
+    base_ranges:
+      FR: {sliding: [0.8, 0.8], torsional: [0.02, 0.02], rolling: [0.01, 0.01]}
+      FL: {sliding: [0.8, 0.8], torsional: [0.02, 0.02], rolling: [0.01, 0.01]}
+      RR: {sliding: [0.8, 0.8], torsional: [0.02, 0.02], rolling: [0.01, 0.01]}
+      RL: {sliding: [0.8, 0.8], torsional: [0.02, 0.02], rolling: [0.01, 0.01]}
+    env_multiplier_range: [0.75, 1.25]

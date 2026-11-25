@@ -32,6 +32,8 @@ def main():
             config[key] = value
     trainer = config["trainer"]
     if args.iterations is not None:
+        if config.get("courses") and args.iterations > trainer["iterations"]:
+            parser.error("--iterations cannot exceed the configured course budget")
         trainer["iterations"] = args.iterations
     if config["num_envs"] < 1 or trainer["iterations"] < 1:
         parser.error("num-envs and iterations must be positive")
