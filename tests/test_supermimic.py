@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import torch
 
@@ -21,7 +21,9 @@ from rl_go2.trainers.model_learning import DynamicsModel, ReplayBuffer, pack, un
 from rl_go2.state import rotate_inverse
 from rl_go2.tasks.flat_walk import FlatWalkTask
 from rl_go2.trainers.cuda_startup import reserve_startup_memory
-from rl_go2.trainers.supermimic import Trainer, TrainConfig, imagined_rollout, frozen, lambda_returns, train
+from rl_go2.trainers.supermimic import (
+    Trainer, TrainConfig, _train_courses, imagined_rollout, frozen, lambda_returns, train,
+)
 from rl_go2.trainers.supermimic_init import initialize_weights
 from rl_go2.trainers.terrain_features import TerrainHeightScan
 from test_framework import FakeBackend
@@ -545,6 +547,16 @@ class SuperMimicTests(unittest.TestCase):
             self.assertTrue(all(left < right for left, right in zip(steps, steps[1:])), (name, steps))
         widths = [saved['world_model']['net.0.weight'].shape[1] for saved in checkpoints]
         self.assertEqual(widths, [77, 77, 77, 93, 93, 147])
+
+    def test_curriculum_resets_cuda_compiler_only_between_active_courses(self):
+        config = load_experiment(ROOT / 'configs/experiments/curriculum_supermimic.yaml')
+        self.cfg.iterations = 20001
+        calls = Mock()
+        calls.train_stage.return_value = ((0, 0), None)
+        with patch('rl_go2.trainers.supermimic._train_stage', calls.train_stage), \
+                patch('torch.compiler.reset', calls.reset):
+            _train_courses(config, self.cfg, Path('unused'), log=None)
+        self.assertEqual([name for name, _, _ in calls.mock_calls], ['train_stage', 'reset', 'train_stage'])
 
     def test_context_matches_real_resample_and_reward(self):
         trainer = self.make_trainer()

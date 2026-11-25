@@ -687,6 +687,11 @@ def _train_courses(config, cfg: TrainConfig, output: Path, log) -> None:
         )
         if last == cfg.iterations:
             break
+        if cfg.compile_training and config['device'] == 'cuda':
+            # Each course creates a new trainer with different compiler guards.
+            # The previous stage has closed, so its compiled graphs can be discarded.
+            torch.compiler.reset()
+            print('Reset torch.compile cache for the next course', flush=True)
         first = last + 1
 
 
