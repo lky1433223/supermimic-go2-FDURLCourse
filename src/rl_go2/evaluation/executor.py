@@ -35,7 +35,7 @@ def execute_trial(env: QuadrupedEnv, policy, seed: int, trial: Trial, video,
         budget = math.ceil(trial.motion.duration_seconds / env.dt)
     phases = trial.condition.phase_schedule(env.dt)
     metrics = METRICS[trial.metrics](env, trial)
-    loads = push_event.loads(env) if push_event is not None else None
+    loads = None
     recovery = PushRecoveryMetrics(push_event, env.dt) if push_event is not None else None
     for step in range(budget):
         if step in commands:
@@ -45,8 +45,9 @@ def execute_trial(env: QuadrupedEnv, policy, seed: int, trial: Trial, video,
         if step in phases:
             trial.condition.apply_phase(env, phases[step])
         action = policy(env.observe())
-        push_active = push_event is not None and push_event.start_step <= step < push_event.end_step
-        if push_active:
+        if push_event is not None and push_event.start_step <= step < push_event.end_step:
+            if loads is None:
+                loads = push_event.loads(env)
             observation, reward, done, extras = env.step(action, link_point_forces=loads)
         else:
             observation, reward, done, extras = env.step(action)
@@ -65,6 +66,8 @@ def execute_trial(env: QuadrupedEnv, policy, seed: int, trial: Trial, video,
     result = metrics.finish(env)
     if recovery is not None:
         result['push_recovery'] = recovery.finish(step + 1, result['fell'])
+        if loads is not None:
+            result['push_recovery']['force_world_n'] = loads.force_world_n[0].sum(dim=0).tolist()
     if trial.scene is not None:
         result['scene'] = trial.scene
     return {'seed': seed, 'condition': trial.condition.name, **result}

@@ -1,19 +1,22 @@
 """Velocity commands and durations for individual evaluation motions."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
 
 
 @dataclass(frozen=True)
 class MotionTask:
+    """A body-frame velocity command in m/s and rad/s."""
+
     name: str
     vx: float
     yaw_rate: float = 0.0
     duration_seconds: float = 20.0
     stop_at_seconds: float | None = None
+    vy: float = field(default=0.0, kw_only=True)
 
     def validate(self) -> None:
         """Require finite commands and a positive duration."""
-        if not all(math.isfinite(value) for value in (self.vx, self.yaw_rate, self.duration_seconds)):
+        if not all(math.isfinite(value) for value in (*self.command, self.duration_seconds)):
             raise ValueError('Motion commands and duration must be finite')
         if self.duration_seconds <= 0:
             raise ValueError('Motion duration must be positive')
@@ -22,7 +25,7 @@ class MotionTask:
 
     @property
     def command(self) -> tuple[float, float, float]:
-        return (self.vx, 0, self.yaw_rate)
+        return (self.vx, self.vy, self.yaw_rate)
 
     def command_schedule(self, dt: float) -> dict[int, tuple[float, float, float]]:
         schedule = {0: self.command}

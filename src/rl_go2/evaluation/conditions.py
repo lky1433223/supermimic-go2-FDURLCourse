@@ -39,6 +39,8 @@ class EvaluationCondition:
         if self.point_push is not None:
             if self.point_push.target not in ('base', 'foot'):
                 raise ValueError('Point push target must be base or foot')
+            if not 0 <= self.point_push.foot_draw < len(FOOT_NAMES):
+                raise ValueError('Point push foot draw must be a valid index into the shuffled feet')
             if not 0 < self.point_push.force_n < float('inf'):
                 raise ValueError('Point push force must be finite and positive')
             if not 0 < self.point_push.duration_seconds < float('inf'):

@@ -2,7 +2,7 @@
 from dataclasses import dataclass
 import math
 from random import Random
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import torch
 
@@ -22,25 +22,33 @@ class PushSpec:
     target: str
     force_n: float
     duration_seconds: float = 0.20
+    foot_draw: int = 0
 
 
 @dataclass(frozen=True)
 class PushEvent:
-    """A sampled local point and world force, shared by paired trials."""
+    """A local contact point and a force in world or onset-heading coordinates."""
 
     start_step: int
     end_step: int
     link_name: str
     point_local_m: tuple[float, float, float]
-    force_world_n: tuple[float, float, float]
+    force_n: tuple[float, float, float]
+    force_frame: Literal['world', 'heading']
 
     def loads(self, env: 'QuadrupedEnv') -> LinkPointForces:
+        """Resolve force in world coordinates at push onset and hold it fixed."""
         link_names = env.backend.link_names
         index = link_names.index(self.link_name)
         points = env.state.position.new_zeros((env.num_envs, len(link_names), 3))
         forces = torch.zeros_like(points)
         points[:, index] = points.new_tensor(self.point_local_m)
-        forces[:, index] = forces.new_tensor(self.force_world_n)
+        force = forces.new_tensor(self.force_n)
+        if self.force_frame == 'heading':
+            w, x, y, z = env.state.quaternion.unbind(dim=-1)
+            yaw = torch.atan2(2 * (w * z + x * y), 1 - 2 * (y.square() + z.square()))
+            force = torch.stack((-force[1] * yaw.sin(), force[1] * yaw.cos(), torch.zeros_like(yaw)), dim=-1)
+        forces[:, index] = force
         return LinkPointForces(points, forces)
 
 
@@ -49,12 +57,20 @@ def sample_event(config: dict, geometry: Go2PushGeometry, dt: float, trial: 'Tri
     spec = trial.condition.point_push
     if spec is None:
         raise ValueError('A push event requires a point-push condition')
-    rng = Random(f'point-push:{seed}:{trial.name}:{spec.target}')
-    azimuth = math.radians(rng.uniform(0, 360))
-    elevation = math.radians(rng.uniform(-25, 25))
-    direction = (math.cos(elevation) * math.cos(azimuth),
-                 math.cos(elevation) * math.sin(azimuth), math.sin(elevation))
-    index = 0 if spec.target == 'base' else rng.randrange(1, len(FOOT_NAMES) + 1)
+    sample_key = f'point-push:{seed}:{trial.name}:{spec.target}'
+    rng = Random(sample_key)
+    if spec.target == 'base':
+        index = 0
+        direction = (0.0, 1.0, 0.0)
+    else:
+        indices = list(range(1, len(FOOT_NAMES) + 1))
+        rng.shuffle(indices)
+        index = indices[spec.foot_draw]
+        rng = Random(f'{sample_key}:{spec.foot_draw}')
+        azimuth = math.radians(rng.uniform(0, 360))
+        elevation = math.radians(rng.uniform(-25, 25))
+        direction = (math.cos(elevation) * math.cos(azimuth),
+                     math.cos(elevation) * math.sin(azimuth), math.sin(elevation))
     link = config['robot']['base_link'] if index == 0 else f'{FOOT_NAMES[index - 1]}_calf'
     directions = torch.tensor(direction, device='cpu').expand(1, len(FOOT_NAMES) + 1, 3)
     with torch.random.fork_rng(devices=[]):
@@ -66,7 +82,8 @@ def sample_event(config: dict, geometry: Go2PushGeometry, dt: float, trial: 'Tri
     end = start + max(1, round(spec.duration_seconds / dt))
     if end >= math.ceil(trial.motion.duration_seconds / dt):
         raise ValueError(f'{trial.name} must leave time for recovery after the push')
-    return PushEvent(start, end, link, point, tuple(axis * spec.force_n for axis in direction))
+    return PushEvent(start, end, link, point, tuple(axis * spec.force_n for axis in direction),
+                     'heading' if index == 0 else 'world')
 
 
 def build_push_events(config: dict, plan: 'EvaluationPlan', seeds: list[int]) -> dict[tuple, PushEvent]:

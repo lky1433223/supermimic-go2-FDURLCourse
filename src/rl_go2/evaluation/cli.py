@@ -3,14 +3,14 @@ import argparse
 from pathlib import Path
 
 from .runner import run_evaluation
-from .tasks import TASKS
+from .tasks import TASKS, RichMotionTask
 from .video import VIDEO_VIEW_AZIMUTH
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Evaluate a saved Go2 policy.')
     parser.add_argument('--list-tasks', action='store_true', help='List evaluation tasks and exit')
-    parser.add_argument('--task', choices=TASKS, help='Evaluation task (default: standard)')
+    parser.add_argument('--task', choices=TASKS, default=RichMotionTask.TASK, help='Evaluation task (default: %(default)s)')
     parser.add_argument('--condition', nargs='+', help='Run only the named evaluation conditions')
     parser.add_argument('--trial', nargs='+', help='Run only trials with the named motions')
     parser.add_argument('--run-dir', type=Path, help='Training directory (required for evaluations)')
@@ -20,7 +20,7 @@ def main(argv=None):
     parser.add_argument('--iteration', type=int, help='Training iteration of the evaluated weights')
     parser.add_argument('--backend', choices=('mujoco', 'genesis'), default='mujoco', help='Default: mujoco')
     parser.add_argument('--seeds', type=int, nargs='+', help='Override the evaluation task\'s default seeds')
-    parser.add_argument('--steps', type=int, help='Rollout steps per seed (default: 1000)')
+    parser.add_argument('--steps', type=int, help='Rollout steps per motion and seed (default: 1000)')
     parser.add_argument('--device', choices=('cpu', 'cuda', 'mps'), default='cpu', help='Default: cpu')
     parser.add_argument('--num-envs', type=int, default=1, help='Number of simulation environments (default: 1)')
     parser.add_argument('--viewer', action='store_true', help='Open a simulation viewer')
@@ -36,7 +36,7 @@ def main(argv=None):
     if args.run_dir is None:
         parser.error('--run-dir is required for evaluations')
 
-    task = TASKS[args.task or 'standard']
+    task = TASKS[args.task]
     is_rollout = task.supports_parallel
     if args.steps is not None and (not is_rollout or args.steps < 1):
         parser.error('--steps requires rollout and a positive step count')

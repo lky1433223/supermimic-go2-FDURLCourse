@@ -1,4 +1,7 @@
-"""Compare fixed terrain presets under the same tracking command."""
+"""Approach each obstacle with forward and lateral walking."""
+
+from dataclasses import replace
+from math import sqrt
 
 from rl_go2.config import FLAT_SCENE_PATH
 
@@ -11,34 +14,45 @@ from ..task import EvaluationGroup, EvaluationTask, SceneSpec
 STEP_SCENE = FLAT_SCENE_PATH.with_name('single_step.yaml')
 RAMP_SCENE = FLAT_SCENE_PATH.with_name('ramp.yaml')
 ROUGH_SCENE = FLAT_SCENE_PATH.with_name('rough_ground.yaml')
+CASE_SECONDS = 8
+NOMINAL = NOMINAL_SAMPLE.condition('nominal', NOMINAL_SLIDING)
+OBSTACLES = (
+    SceneSpec('step-5cm', STEP_SCENE, {'step': {'height_m': 0.05}}),
+    SceneSpec('step-10cm', STEP_SCENE, {'step': {'height_m': 0.10}}),
+    SceneSpec('ramp-10deg', RAMP_SCENE, {'ramp': {'slope_deg': 10.0}}),
+    SceneSpec('ramp-20deg', RAMP_SCENE, {'ramp': {'slope_deg': 20.0}}),
+    *(SceneSpec(f'rough-{seed}', ROUGH_SCENE, {'rough': {
+        'seed': seed, 'max_height_level': 5, 'max_adjacent_delta_levels': 5,
+    }}) for seed in (101, 102)),
+)
+# A -90 degree yaw maps body +Y to world +X, toward the obstacle.
+SIDEWAYS_ROTATION = (sqrt(0.5), 0.0, 0.0, -sqrt(0.5))
 
 
 class TerrainTask(EvaluationTask):
     TASK = 'terrain'
-    TASK_DESCRIPTION = 'Compare straight walking on flat ground, single steps, ramps, and seeded rough ground.'
+    TASK_DESCRIPTION = 'Walk forward and sideways onto steps, ramps, and seeded rough ground.'
 
     evaluation_groups = (
         EvaluationGroup(
-            name='crossing',
-            scenes=(
-                SceneSpec('flat', FLAT_SCENE_PATH),
-                SceneSpec('step-2cm', STEP_SCENE, {'step': {'height_m': 0.02}}),
-                SceneSpec('step-4cm', STEP_SCENE, {'step': {'height_m': 0.04}}),
-                SceneSpec('step-6cm', STEP_SCENE, {'step': {'height_m': 0.06}}),
-                SceneSpec('ramp-5deg', RAMP_SCENE, {'ramp': {'slope_deg': 5.0}}),
-                SceneSpec('ramp-10deg', RAMP_SCENE, {'ramp': {'slope_deg': 10.0}}),
-                SceneSpec('rough-101', ROUGH_SCENE, {'rough': {'seed': 101}}),
-                SceneSpec('rough-102', ROUGH_SCENE, {'rough': {'seed': 102}}),
-            ),
-            conditions=(NOMINAL_SAMPLE.condition('nominal', NOMINAL_SLIDING),),
-            motions=(MotionTask('forward_0.5', 0.5, duration_seconds=8),),
+            name='forward',
+            scenes=OBSTACLES,
+            conditions=(NOMINAL,),
+            motions=(MotionTask('forward_0.5', 0.5, duration_seconds=CASE_SECONDS),),
+        ),
+        EvaluationGroup(
+            name='lateral',
+            scenes=tuple(replace(scene, name=f'{scene.name}-side', robot_rotation=SIDEWAYS_ROTATION)
+                         for scene in OBSTACLES),
+            conditions=(NOMINAL,),
+            motions=(MotionTask('lateral_0.5', 0.0, vy=0.5, duration_seconds=CASE_SECONDS),),
         ),
     )
     metrics = 'terrain'
     report = {
-        'velocity_axes': ['vx', 'vy', 'yaw_rate'], 'case_seconds': 8,
+        'velocity_axes': ['vx', 'vy', 'yaw_rate'], 'case_seconds': CASE_SECONDS,
         'success_criteria': TERRAIN_SUCCESS_CRITERIA,
     }
-    episode_seconds = 8
+    episode_seconds = CASE_SECONDS
     continue_after_reset = False
     reset_before_start = True

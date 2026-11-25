@@ -45,89 +45,75 @@ ICC 无窗口录制使用 `MUJOCO_GL=egl`。显式 `--output` 指向本次评测
 单视角为 640×480，多视角每格为 448×336。录像统一使用 20 FPS、H.264、CRF 24 和 2 Mbit/s 码率上限。
 `eval-config.json` 的 `video_views` 和 `video_encoding` 分别记录实际视角顺序和编码设置。
 
-### 标准速度跟踪评测
+### 丰富动作评测
 
 ```bash
-uv run --extra train python scripts/evaluate.py --run-dir output/flat-supermimic-guided-001 --task standard
+uv run --extra train python scripts/evaluate.py --run-dir output/flat-supermimic-guided-001 --task rich-motion
 ```
 
-每组物理参数跑 27 项，横向速度指令固定为 0。速度单位为 m/s，转向单位为 rad/s。
-标称组使用零质心偏移、标称质量与惯量和四脚滑动摩擦 0.8。另有两个以固定种子抽出的物理样本，
-质心 X/Y/Z 偏移范围为 ±1/±3/±1 cm，质量倍率为 0.9–1.1，四脚共用摩擦倍率为 0.75–1.25。
-这些样本在所有动作中保持固定，每个评测种子共跑 81 项。
+`rich-motion` 是默认评测，只使用标称机身质量与惯量、零质心偏移和四足滑动摩擦 0.8。
+基础组 `in-range` 在 `vx=-1～2 m/s`、`vy=±1 m/s`、转向 `±1 rad/s` 内选取 31 项，覆盖站立、前进、倒退、横移、原地转向和组合动作。
+扩展组 `out-of-range` 每次只令一个轴超出训练上限，覆盖 `vx=-1.25/+2.5 m/s`、`vy=±1.25 m/s` 和转向 `±1.25 rad/s`，共 6 项。
 
-| 组别 | 前进速度 | 转向速度 | 项数 |
-| --- | --- | --- | --- |
-| 常规 | 0.2、0.4、0.6、0.8 | 0、±0.4 | 12 |
-| 常规 | 0.5 | 0、±0.1、±0.3、±0.5 | 7 |
-| OOD | 0 | 0 | 1 |
-| OOD | 0.5 跑 8 秒，再切到 0 | 0 | 1 |
-| OOD | 1.0、1.2 | 0 | 2 |
-| OOD | 0.5 | ±0.6、±0.8 | 4 |
-
-每项从默认姿态开始，最多运行 20 秒。摔倒时记录时间并结束该项，继续后续工况。
-报告包含全程及去掉前 2 秒后的速度 RMSE，以及走停工况的稳定用时和末 2 秒位移。
-`standard` 默认用种子 1，可用 `--seeds` 对整套工况复测。
+默认用种子 1。每项从默认姿态开始，最多运行 20 秒，整套名义仿真时长为 12 分 20 秒。摔倒时记录时间并结束该项，继续后续工况。
+报告包含全程及去掉前 2 秒后的三轴速度 RMSE。
 
 ### 固定低摩擦评测
 
-`low-friction` 使用五组固定滑动摩擦：四脚统一 0.8、0.1、0.2、左侧低摩擦和右侧低摩擦。
-每组跑静站、0.2 m/s 直行、0.5 m/s 直行、以 0.5 m/s 左右各转一次（偏航 ±0.4 rad/s）和走停。
-每项最多 20 秒，走停在第 8 秒清零指令。五组摩擦分别配标称机身和与 `standard` 共享的两个质心和质量样本，
-每个评测种子共 90 项。
+`low-friction` 使用四组固定滑动摩擦，分别是四足统一 0.1、四足统一 0.2、左侧低摩擦和右侧低摩擦。
+每组搭配三套机身参数，分别是标称机身、机身质量放大到 1.50 倍且质心不偏移、标称质量且质心向 +Y 偏移 5 cm。
+除 `rich-motion` 和 `terrain` 外，所有启用的评测每个工况都跑同一组 8 个动作。动作包括站立、以 0.5 m/s 前进和倒退、向 +Y 横移 0.5 m/s、以 +0.5 rad/s 原地转向、以 2 m/s 直走，以及以 0.5 m/s 前进同时左右转向（±0.5 rad/s）。低摩擦的标称摩擦对照取 `rich-motion` 中相同的动作。
+每项最多 20 秒，每个评测种子共 96 项。
 
 ```bash
 uv run --extra train python scripts/evaluate.py --run-dir output/flat-supermimic-guided-001 --task low-friction
 ```
 
-### 行进中切换摩擦
+### 训练中的定时摩擦切换
 
-摩擦切换对照使用 `python scripts/evaluate.py --task friction-switch --run-dir <训练目录>`。
-它与 `low-friction` 共用六项动作和三个机身样本。四条滑动摩擦曲线分别是固定 0.8、
-0.8 → 0.4 → 0.8、0.8 → 0.2 → 0.8，以及中间 0.2 只持续 2 秒的短时低摩擦。
-低摩擦都从第 5 秒开始，长段在第 10 秒恢复，短段在第 7 秒恢复。每个评测种子共 72 项。
-报告记录逐项跟踪、走停指标以及各阶段的实际接触摩擦和跟踪误差。
+`friction-switch` 评测暂时下线。
 训练时可在启用 `foot_ground_friction` 后设置 `env_multiplier_range: [0.75, 1.25]` 和
 `switch_interval_seconds: [2.0, 5.0]`。启用定时切换时四脚基础范围须为固定值，
 各环境独立重抽倍率，真实采样和想象 rollout 使用相同的倍率与时长分布。
 
-`rollout` 用于运行检查，固定零质心偏移、标称质量和惯量、四脚滑动摩擦 0.8 和 0.5 m/s 直行。
-默认用种子 1 跑 1000 个控制步，重置后继续至步数上限。
+### 推理运行检查
+
+`rollout` 用于运行检查，使用零质心偏移、标称质量和惯量及四脚滑动摩擦 0.8。
+默认用种子 1，每个动作独立重置并跑 1000 个控制步，中途重置后继续执行该动作至步数上限。
 
 ### 机身质量和质心泛化
 
-`--task mass` 固定零质心偏移，依次测试机身质量倍率 0.50、0.80、0.90、1.00、1.10、1.20、1.50。
-惯量随质量同比缩放。每个种子跑 42 项。
+`--task mass` 测试标称质量、训练下限 0.85 倍、训练上限 1.50 倍，以及 1.50 倍质量叠加质心向 +Y 偏移 5 cm。
+前三组使用零质心偏移，惯量随质量同比缩放。每组跑共用的 8 个动作，每个种子共 32 项。
 
-`--task com-offset` 固定标称质量与惯量，测试零偏移、X 轴 ±1/±3/±5 cm、Y 轴 ±3/±4 cm、
-Z 轴 ±1 cm，以及三轴同时偏移 (+3, +3, +1) cm。每个种子跑 84 项。
+`--task com-offset` 固定标称质量与惯量，测试零偏移、X/Y/Z 各自的 ±5 cm 单轴偏移，以及三轴同时偏移 (+5, +5, +5) cm。
+每组使用与 `mass` 相同的 8 个动作，每个种子共 64 项。
 
-两项都使用平地步态、固定四脚滑动摩擦 0.8 和与 `low-friction` 相同的六项动作。
-每项最多 20 秒。报告按工况统计摔倒，并记录实际机身质量、质心偏移、速度跟踪和走停指标。
+两项都使用平地和固定四足滑动摩擦 0.8，每条最多 20 秒。报告按工况统计摔倒，并记录实际机身质量、质心偏移和速度跟踪。
 静站另记录机身最低高度和最终水平位移。
 
 ### 随机点力恢复
 
-`--task point-push` 在 MuJoCo 标称物理工况下运行相同的六个动作。对照组无推力，机身组为 20 N、30 N、80 N 和 160 N，
-足端组为 8 N 和 12 N，均持续 0.2 秒。机身 80 N 和 160 N 各增加一组持续 0.1 秒的短推力对照。
-推力在第 5 秒开始，走停项在第 10 秒开始。默认种子 1、2、3，共 162 项。
-同一受力部位的不同力度和时长复用对应试次的施力连杆、局部落点和世界系方向。
-`eval-config.json` 保存实际点力事件，报告按工况统计摔倒及恢复结果。恢复时间从撤力到满足 0.5 秒稳定判据为止。
+`--task point-push` 在 MuJoCo 标称物理工况下运行共用的 8 个动作。每个动作测四次机身侧推，分别为 50 N × 0.3 秒、100 N × 0.2 秒、200 N × 0.1 秒和 200 N × 0.3 秒。
+机身侧推复用同一局部落点，在第 5 秒按机身朝向确定水平 +Y 方向，并在施力期间保持该世界坐标方向。另从四条腿中随机抽两条不同的腿，各自独立跑一次 20 N × 0.2 秒足部推力，也从第 5 秒开始。
+默认种子 1，共 48 项。无推力对照使用 `rich-motion` 中相同的动作。
+`eval-config.json` 保存点力的施力连杆、局部落点、时序和力的参考系。评测报告记录施加的世界坐标力、摔倒和恢复结果。恢复时间从撤力到满足 0.5 秒稳定判据为止。
 
 用 `--condition` 按工况名筛选，用 `--trial` 按动作名进一步筛选。评测报告和可选录像只包含选中的试次。
-下面的命令只用种子 1 录制 80 N 短推下的慢速直行。去掉 `--trial` 和 `--seeds` 就会覆盖所选工况下的全部动作和默认种子。
+下面的命令录制 200 N、0.1 秒的机身侧推下的直行。去掉 `--trial` 就会覆盖所选工况下的全部动作。
 
 ```bash
 python scripts/evaluate.py --task point-push --run-dir <训练目录> \
-  --condition base-80n-short --trial vx0.2_yaw0 --seeds 1 --video
+  --condition base-200n-100ms --trial vx0.5_yaw0 --video
 ```
 
 ### 地形场景对照
 
-`python scripts/evaluate.py --task terrain --run-dir <训练目录>` 用同一策略和标称物理工况在平地、2/4/6 cm 台阶、5°/10° 缓坡和两张随机不平整地面上执行 8 秒直行。
+`python scripts/evaluate.py --task terrain --run-dir <训练目录>` 在标称物理工况下测试 5/10 cm 台阶、10°/20° 坡道和两张起伏地面图。
+每套地形各测 0.5 m/s 正走和 0.5 m/s 侧走，各最多 8 秒。侧走将机器人出生朝向转 −90°，让机身 +Y 的横移方向正对障碍。每个种子共 12 项。
 可加 `--backend genesis` 用同一套件检查 Genesis。`eval-config.json` 的 `scenes` 记录解析后的碰撞几何和机器人出生位姿，
 `summary.json` 按场景汇总通过、失败及摔倒次数。各场景的报告和可选录像保存在 `<场景>/<工况>/`。
-通过要求全程未摔倒，且去掉前 2 秒后的前进速度 MSE 不超过 0.04 (m/s)²（RMSE 0.20 m/s）。
+通过要求全程未摔倒，且去掉前 2 秒后，前后速度、横向速度和转向角速度各自的 RMSE 不超过 0.20（分别以 m/s、m/s、rad/s 计）。
 逐项报告记录失败原因、最大倾角和前进位移。
 
 `configs/scenes/flat.yaml` 使用单个平面，`configs/scenes/single_step.yaml` 在平面上增加一个固定箱体。
@@ -137,8 +123,8 @@ python scripts/evaluate.py --task point-push --run-dir <训练目录> \
 评测套件在 `EvaluationGroup` 中选择场景、工况与动作，可通过 `SceneSpec.entity_overrides` 复用地形文件并指定多个高度或坡度。
 当前地形套件使用平地步行任务的奖励和终止规则。
 
-`configs/scenes/rough_ground.yaml` 用 `seed` 生成一张 5×4 的高度图。每块砖默认边长 30 cm，高度为 0、1 或 2 cm，
-相邻高差与入口、出口到平地的高差最多为 1 cm。`terrain` 使用地形种子 101 和 102，地形种子独立于 `--seeds`。
+`configs/scenes/rough_ground.yaml` 用 `seed` 生成一张 5×4 的高度图，每块砖边长 30 cm。`terrain` 使用地形种子 101 和 102，
+以 1 cm 为高度步长，高度和相邻格高差均最多 5 cm。地形种子独立于 `--seeds`。
 `eval-config.json` 和对应场景的 `assessment.json` 保存地形种子和实际高度图。
 训练配置可用 `scene: ../scenes/rough_ground.yaml` 加载该文件指定的地图，地图在环境创建时生成。
 
@@ -383,8 +369,8 @@ uv sync --extra train --locked
 # 本机已验证 driver 的绝对路径见下方说明；仓库不附带教师权重。
 uv run --extra train python scripts/train.py --config configs/experiments/flat_supermimic_guided.yaml \
   --driver-policy /absolute/path/to/compatible-go2-policy.pt --output output/flat-supermimic-guided-001
-uv run --extra train python scripts/evaluate.py --run-dir output/flat-supermimic-guided-001 --task standard
-uv run --extra train python scripts/evaluate.py --run-dir output/flat-supermimic-guided-001 --task standard \
+uv run --extra train python scripts/evaluate.py --run-dir output/flat-supermimic-guided-001 --task rich-motion
+uv run --extra train python scripts/evaluate.py --run-dir output/flat-supermimic-guided-001 --task rich-motion \
   --seeds 201 202 203 204 205 206 207 208 209 210
 # 导出策略推理不需要 --driver-policy，也不会读取教师模型。
 uv run --extra train python scripts/evaluate.py --task rollout --run-dir output/flat-supermimic-guided-001 --backend mujoco --steps 1000
@@ -414,7 +400,7 @@ GPU 可覆盖 `--device cuda --num-envs ...`，但不同规模尚未重新调优
 ```bash
 CUDA_VISIBLE_DEVICES=1 uv run --extra train python scripts/train.py \
   --config configs/experiments/flat_supermimic_bootstrap.yaml --output output/flat-supermimic-bootstrap-001
-uv run --extra train python scripts/evaluate.py --run-dir output/flat-supermimic-bootstrap-001 --task standard
+uv run --extra train python scripts/evaluate.py --run-dir output/flat-supermimic-bootstrap-001 --task rich-motion
 ```
 
 2026-11-02 ICC GPU 1 的一次完整训练使用旧调度（300 轮世界模型预热、每轮 2 个模型 batch、
@@ -434,22 +420,6 @@ vx/vy/yaw RMSE 分别为 0.0586 m/s、0.0179 m/s、0.0404 rad/s。
 四路观测一起延迟，回合内固定，命令和上一动作保持当前步的值。默认缺省延迟，空噪声链关闭该路扰动。
 训练和评测幅度尚未用本项目的 Go2 实测标定。
 
-`sensor-noise` 评测在平地上用相同动作和种子对比 `nominal`、`uniform`、`combined`、`go2-reference` 四种条件。
-报告和可选视频分别保存在各条件目录。其他评测任务使用干净观测。
-
-`go2-reference` 用 ±0.2 rad/s 的陀螺仪噪声、±0.01 rad 的关节角噪声和 ±1.5 rad/s 的关节速度噪声。
-宇树配置的投影重力扰动为每分量 ±0.05。该评测工况用机身前轴和侧轴各 ±0.05 rad 的小旋转近似水平姿态附近的扰动，
-再从四元数计算重力方向。幅值来自 sim-to-real 训练配置，真实传感器误差仍待实测。
-[Unitree Go2 RL Lab 配置](https://github.com/unitreerobotics/unitree_rl_lab/blob/main/source/unitree_rl_lab/unitree_rl_lab/tasks/locomotion/robots/go2/velocity_env_cfg.py)
-
-该工况模拟整帧观测固定滞后一个 policy 步，当前 50 Hz 配方对应 20 ms。有线 Go2 Pro 公开测试的
-`LowState` 到包间隔中位数约 2 ms，命令到力矩反馈的中位数约 5.4–7.8 ms。整帧 20 ms 是按本项目控制步长选定的评测条件。
-[Go2 Pro 有线链路实测](https://github.com/AstroKido/go2pro_benchmarks#tests--results)
-
-```bash
-python scripts/evaluate.py --task sensor-noise --backend mujoco --run-dir output/<训练目录> --iteration <轮次>
-```
-
 ### 动作延迟
 
 `terrain_supermimic_push.yaml` 在 `domain_randomization.action_delay_steps` 下设为 `[0, 2]`。
@@ -458,11 +428,21 @@ python scripts/evaluate.py --task sensor-noise --backend mujoco --run-dir output
 Policy 观测和动作变化惩罚使用发出的指令，PD 和世界模型使用当步实际执行的动作。
 SuperMimic 从 replay 恢复动作队列，并在想象 rollout 中按相同延迟执行。
 
-`action-delay` 评测用相同动作和干净观测对比 `nominal`、`delay-1-step`、`delay-2-steps`。
-其他评测任务使用即时动作。
+### 传感器与动作延迟联合评测
+
+`sensor-action` 每组在平地标称工况下跑共用的 8 个动作。开启传感器扰动时，使用与当前课程一致的四路均匀噪声，
+角速度 ±0.20 rad/s、投影重力各分量 ±0.05、关节角 ±0.01 rad、关节速度 ±1.50 rad/s。整帧观测延迟与动作延迟在各自开启时均固定为 1 个控制步，50 Hz 下为 20 ms。
+
+| 工况 | 传感器噪声与整帧延迟 | 动作延迟 |
+| --- | --- | --- |
+| `sensor-only` | 开 | 关 |
+| `action-only` | 关 | 开 |
+| `combined` | 开 | 开 |
+
+每个种子 24 项，默认种子为 1、2、3。干净观测和即时动作的对照取 `rich-motion` 中对应的 8 个动作。报告和可选视频保存在各工况目录。
 
 ```bash
-python scripts/evaluate.py --task action-delay --backend mujoco --run-dir output/<训练目录> --iteration <轮次>
+python scripts/evaluate.py --task sensor-action --backend mujoco --run-dir output/<训练目录> --iteration <轮次>
 ```
 
 ### 为什么旧训练没有改善

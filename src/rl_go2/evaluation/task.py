@@ -12,11 +12,12 @@ from .motion_tasks import MotionTask
 
 @dataclass(frozen=True)
 class SceneSpec:
-    """A named scene file with optional overrides for its terrain entities."""
+    """A named scene file with optional terrain and robot spawn rotation overrides."""
 
     name: str
     file: Path
     entity_overrides: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
+    robot_rotation: tuple[float, float, float, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -139,7 +140,9 @@ class EvaluationTask:
                     raise ValueError(f'Invalid or conflicting scene name: {scene.name!r}')
                 if scene.name not in specs:
                     specs[scene.name] = scene
-                    scenes[scene.name] = load_scene(scene.file, entity_overrides=scene.entity_overrides)
+                    scenes[scene.name] = load_scene(
+                        scene.file, entity_overrides=scene.entity_overrides, robot_rotation=scene.robot_rotation,
+                    )
             if condition.name not in conditions:
                 condition.validate()
                 conditions[condition.name] = condition

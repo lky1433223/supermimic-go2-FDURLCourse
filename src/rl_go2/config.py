@@ -106,13 +106,22 @@ def read_yaml(path):
     return data
 
 
-def load_scene(path: str | Path, *, entity_overrides: Mapping[str, Mapping[str, float]] | None = None) -> dict:
-    """Load backend-ready geometry, optionally overriding named terrain parameters."""
+def load_scene(
+    path: str | Path,
+    *,
+    entity_overrides: Mapping[str, Mapping[str, float]] | None = None,
+    robot_rotation: tuple[float, float, float, float] | None = None,
+) -> dict:
+    """Load scene geometry with optional terrain and robot spawn rotation overrides."""
     path = Path(path).resolve()
     doc = read_yaml(path)
     if doc.get("schema") != "rl-go2.scene/v1":
         raise ValueError("Expected schema: rl-go2.scene/v1 (Unisis-style subset)")
-    return validate_scene(doc["scene"], path, entity_overrides=entity_overrides)
+    scene = doc["scene"]
+    if robot_rotation is not None:
+        robot = next(entity for entity in scene["entities"] if entity.get("robot"))
+        robot["rotation"] = list(robot_rotation)
+    return validate_scene(scene, path, entity_overrides=entity_overrides)
 
 
 def validate_scene(scene: dict, path: Path, *, entity_overrides=None) -> dict:

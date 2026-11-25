@@ -7,26 +7,22 @@ from ..push_events import PushSpec
 from .body_parameters import BodyParameterTask
 
 
-BASELINE = NOMINAL_SAMPLE.condition('no-push', NOMINAL_SLIDING)
+NOMINAL = NOMINAL_SAMPLE.condition('nominal', NOMINAL_SLIDING)
 
 
 class PointPushTask(BodyParameterTask):
-    """Test one matched transient force per motion on nominal physics."""
+    """Test four lateral trunk pushes and two sampled foot pushes per motion."""
 
     TASK = 'point-push'
-    TASK_DESCRIPTION = 'Compare no push, training-limit pushes, and out-of-range pushes.'
+    TASK_DESCRIPTION = 'Measure recovery from lateral trunk pushes and two sampled foot pushes per motion.'
     backends = ('mujoco',)
-    default_seeds = (1, 2, 3)
     conditions = (
-        BASELINE,
-        replace(BASELINE, name='base-limit', point_push=PushSpec('base', 20.0)),
-        replace(BASELINE, name='base-ood', point_push=PushSpec('base', 30.0)),
-        replace(BASELINE, name='base-80n', point_push=PushSpec('base', 80.0)),
-        replace(BASELINE, name='base-160n', point_push=PushSpec('base', 160.0)),
-        replace(BASELINE, name='base-80n-short', point_push=PushSpec('base', 80.0, duration_seconds=0.10)),
-        replace(BASELINE, name='base-160n-short', point_push=PushSpec('base', 160.0, duration_seconds=0.10)),
-        replace(BASELINE, name='foot-limit', point_push=PushSpec('foot', 8.0)),
-        replace(BASELINE, name='foot-ood', point_push=PushSpec('foot', 12.0)),
+        replace(NOMINAL, name='base-50n-300ms', point_push=PushSpec('base', 50.0, duration_seconds=0.30)),
+        replace(NOMINAL, name='base-100n-200ms', point_push=PushSpec('base', 100.0, duration_seconds=0.20)),
+        replace(NOMINAL, name='base-200n-100ms', point_push=PushSpec('base', 200.0, duration_seconds=0.10)),
+        replace(NOMINAL, name='base-200n-300ms', point_push=PushSpec('base', 200.0, duration_seconds=0.30)),
+        replace(NOMINAL, name='foot-20n-draw-1', point_push=PushSpec('foot', 20.0)),
+        replace(NOMINAL, name='foot-20n-draw-2', point_push=PushSpec('foot', 20.0, foot_draw=1)),
     )
     report = {
         **BodyParameterTask.report,

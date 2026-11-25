@@ -154,6 +154,8 @@ class TrackingMetrics(TrialMetrics):
 
 TERRAIN_SUCCESS_CRITERIA = {
     'max_forward_velocity_mse_after_2s_m2_s2': 0.04,
+    'max_lateral_velocity_mse_after_2s_m2_s2': 0.04,
+    'max_yaw_rate_mse_after_2s_rad2_s2': 0.04,
 }
 
 
@@ -176,9 +178,9 @@ class TerrainMetrics(TrackingMetrics):
         reasons = []
         if result['fell']:
             reasons.append('fall')
-        if mse is None:
+        if rmse is None:
             reasons.append('insufficient_tracking_samples')
-        elif mse > TERRAIN_SUCCESS_CRITERIA['max_forward_velocity_mse_after_2s_m2_s2']:
+        elif any(error ** 2 > limit for error, limit in zip(rmse, TERRAIN_SUCCESS_CRITERIA.values(), strict=True)):
             reasons.append('tracking_mse')
         roll_pitch = torch.stack(self.quaternions)[:, 1:3]
         upright = (1 - 2 * roll_pitch.square().sum(dim=1)).clamp(-1, 1)
@@ -253,7 +255,8 @@ class RolloutMetrics(TrialMetrics):
         self.observation_shape = list(observation.shape)
 
     def finish(self, env):
-        return {'steps': self.steps, 'seconds': self.steps * env.dt,
+        return {'case': self.trial.name, 'command': list(self.trial.motion.command),
+                'steps': self.steps, 'seconds': self.steps * env.dt,
                 'observation_shape': self.observation_shape,
                 'mean_total_reward': self.total_reward, 'episode_resets': self.resets, 'policy_updates': 0}
 

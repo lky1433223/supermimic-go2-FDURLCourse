@@ -1,19 +1,19 @@
-"""A fixed straight-walking smoke test with explicit physical conditions."""
+"""Run the shared motion set as a smoke test under nominal physics."""
 from ..conditions import NOMINAL_SAMPLE, NOMINAL_SLIDING
-from ..motion_tasks import MotionTask
 from ..task import EvaluationTask
+from .rich_motion import GENERALIZATION_MOTIONS
 
 
 class RolloutTask(EvaluationTask):
     TASK = 'rollout'
-    TASK_DESCRIPTION = 'Run fixed 0.5 m/s straight walking for a step budget.'
+    TASK_DESCRIPTION = 'Run eight nominal motion checks with a step budget per motion.'
 
     conditions = (NOMINAL_SAMPLE.condition('nominal', NOMINAL_SLIDING),)
-    motions = {'': (MotionTask('forward_0.5', 0.5, yaw_rate=0, duration_seconds=20),)}
+    motions = {'': GENERALIZATION_MOTIONS}
     metrics = 'rollout'
     report = {}
     episode_seconds = 20
     continue_after_reset = True
-    reset_before_start = False
+    reset_before_start = True
     supports_parallel = True
     default_steps = 1000
