@@ -36,7 +36,6 @@ class QuadrupedEnv:
         self.config = config
         task_type = get_task_type(config["task"]["name"])
         task_type.validate_config(config["task"], config["robot"])
-        self.observation_noise = ObservationNoise.from_config(config)
         self.action_delay = action_delay_from_config(config)
         self.action_delay_state: StepDelayState | None = None
         self.noise_history: NoiseHistory = {}
@@ -49,6 +48,9 @@ class QuadrupedEnv:
         self.dt = config["scene"]["sim_options"]["dt"] * config["robot"]["control_decimation"]
         self.max_episode_length = math.ceil(config["task"]["episode_seconds"] / self.dt)
         self.controller = JointPositionControl(config["robot"], self.device)
+        self.observation_noise = ObservationNoise.from_config(
+            config, device=self.device, dtype=self.controller.default.dtype
+        )
         self.task = task_type(config["task"], self.controller.default, self.num_envs,
                               self.device, self.dt, config["seed"])
         self.episode_length_buf = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
