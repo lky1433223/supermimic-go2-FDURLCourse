@@ -20,15 +20,15 @@ courses:
   - config: ../courses/basic_motion.yaml
     iterations: 10000
   - config: ../courses/expanded_motion.yaml
-    iterations: 10000
+    iterations: 20000
   - config: ../courses/observation_and_action.yaml
-    iterations: 10000
+    iterations: 20000
   - config: ../courses/body_and_friction.yaml
-    iterations: 10000
+    iterations: 20000
   - config: ../courses/point_push.yaml
-    iterations: 10000
+    iterations: 30000
   - config: ../courses/terrain.yaml
-    iterations: 10000
+    iterations: 100000
 trainer:
   name: supermimic
   collect_steps: 1

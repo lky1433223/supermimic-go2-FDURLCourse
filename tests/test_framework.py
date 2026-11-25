@@ -94,6 +94,7 @@ class FrameworkTests(unittest.TestCase):
         config = load_experiment(ROOT / 'configs/experiments/curriculum_supermimic_rewards.yaml')
         config.update(backend='mujoco', device='cpu', num_envs=1)
         task = config['task']
+        task['termination']['contact_failure']['enabled'] = True
         rewards = []
         for weight in (0.0, -4.0):
             task['reward']['failure']['weight'] = weight

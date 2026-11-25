@@ -15,7 +15,7 @@ termination:
   min_base_height_m: 0.12
   max_tilt_deg: 60
   contact_failure:
-    enabled: true
+    enabled: false
     force_threshold_n: 10.0
     exempt: [foot, lower_calf]
 
@@ -36,7 +36,7 @@ reward:
     reference: reset_pose
     tolerance_rad: {hip: 0.15, thigh: 0.35, calf: 0.50}
   gait_mismatch:
-    weight: -0.5
+    weight: 0.0
     pattern: trot
     period_s: 0.60
     stance_fraction: 0.56

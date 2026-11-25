@@ -579,6 +579,7 @@ class SuperMimicTests(unittest.TestCase):
     def test_gait_reward_uses_contact_and_episode_step_during_policy_updates(self):
         config = load_experiment(ROOT / 'configs/experiments/curriculum_supermimic_rewards_smoke.yaml')
         config.update(backend='mujoco', device='cpu', num_envs=1)
+        config['task']['reward']['gait_mismatch']['weight'] = -0.5
         env = QuadrupedEnv(config, record_transitions=True)
         self.addCleanup(env.close)
         self.cfg.bootstrap_weight = 1.0
