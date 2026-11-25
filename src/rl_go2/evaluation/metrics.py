@@ -3,6 +3,8 @@ import math
 
 import torch
 
+from rl_go2.env import Transition
+
 
 RECOVERY_CRITERIA = {
     'planar_velocity_error_m_s': 0.1,
@@ -82,6 +84,7 @@ class TrackingMetrics(TrialMetrics):
         self.positions = [env.state.position[0, :2].clone()]
         self.stand_heights = [] if trial.name == 'stand' else None
         self.transition = None
+        self.prohibited_contact_peaks = []
 
     def update(self, env, transition, reward, done, observation, step):
         linear, angular, _ = env.task.body_state(transition.next_state)
@@ -93,6 +96,8 @@ class TrackingMetrics(TrialMetrics):
         self.positions.append(transition.next_state.position[0, :2])
         if self.stand_heights is not None:
             self.stand_heights.append(transition.next_state.position[0, 2])
+        if isinstance(transition, Transition) and transition.prohibited_contact_force_n is not None:
+            self.prohibited_contact_peaks.append(transition.prohibited_contact_force_n[0])
         self.transition = transition
 
     def finish(self, env):
@@ -123,6 +128,9 @@ class TrackingMetrics(TrialMetrics):
             result['base_mass_kg'] = env.base_mass_kg.item()
         if env.base_com_offset_m is not None:
             result['base_com_offset_m'] = env.base_com_offset_m[0].tolist()
+        if self.prohibited_contact_peaks:
+            result['peak_prohibited_contact_force_n'] = torch.stack(self.prohibited_contact_peaks).max().item()
+            result['terminated_with_prohibited_contact'] = fell and bool(self.transition.contact_labels[0, 4])
         return result
 
     def stop_metrics(self, dt, completed):

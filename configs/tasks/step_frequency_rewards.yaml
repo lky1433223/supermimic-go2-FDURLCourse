@@ -1,0 +1,43 @@
+name: flat_walk
+episode_seconds: 20
+command_resample_seconds: 4
+command_ranges:
+  - [0.2, 0.8]
+  - [0.0, 0.0]
+  - [-0.5, 0.5]
+observation_scales:
+  angular_velocity: 0.25
+  joint_position: 1.0
+  joint_velocity: 0.05
+  commands: [2.0, 2.0, 0.25]
+
+termination:
+  min_base_height_m: 0.12
+  max_tilt_deg: 60
+  contact_failure:
+    enabled: true
+    force_threshold_n: 10.0
+    exempt: [foot, lower_calf]
+
+reward:
+  tracking_sigma: 0.25
+  tracking_linear: {weight: 1.0}
+  tracking_yaw: {weight: 0.5}
+  vertical_velocity: {weight: -2.0}
+  roll_pitch_velocity: {weight: -0.05}
+  orientation: {weight: -1.0}
+  height: {weight: -10.0, target_m: 0.30}
+  torque: {weight: -0.0001}
+  action_rate: {weight: -0.01}
+  failure:
+    weight: -4.0  # Once per failed episode. Zero disables the charge.
+  posture_deviation:
+    weight: -1.0
+    reference: reset_pose
+    tolerance_rad: {hip: 0.15, thigh: 0.35, calf: 0.50}
+  gait_mismatch:
+    weight: 0.0  # Keep fixed-phase gait shaping disabled.
+    pattern: trot
+    period_s: 0.60
+    stance_fraction: 0.56
+    command_threshold: 0.10

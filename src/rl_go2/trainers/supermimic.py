@@ -194,12 +194,28 @@ def imagined_step(env, model, actor, cfg, state, previous_action, context,
     applied_action = issued_action
     if action_delay_state is not None:
         applied_action = env.action_delay.select(issued_action, action_delay_state)
-    next_state, torque = model(state, applied_action, previous_action, features, wrenches_world)
+    walk = env.walk_rewards
+    contact_probability = None
+    if walk is not None and walk.requires_contacts:
+        next_state, torque, contact_logits = model.predict_transition(state, applied_action, features, wrenches_world)
+        assert contact_logits is not None
+        contact_probability = contact_logits.sigmoid()
+    else:
+        next_state, torque = model(state, applied_action, previous_action, features, wrenches_world)
     next_robot = unpack(next_state)
     torque = torque.clamp(-env.controller.limits, env.controller.limits)
     reward = env.task.reward(next_robot, issued_action, previous_action, torque, context)
-    continuation = 1 - env.task.termination_probability(next_robot, context, cfg.height_softness, cfg.upright_softness)
-    return next_state, issued_action, reward, continuation, inputs
+    failure = env.task.termination_probability(next_robot, context, cfg.height_softness, cfg.upright_softness)
+    if walk is not None:
+        if walk.contact_enabled:
+            assert contact_probability is not None
+            failure = 1 - (1 - failure) * (1 - contact_probability[:, 4])
+        if walk.failure_weight or walk.posture_weight or walk.gait_weight:
+            step = context['episode_step'] + 1 if walk.gait_weight else None
+            feet = None if contact_probability is None else contact_probability[:, :4]
+            reward = reward + walk.extra_reward(next_robot.joint_position, failure, foot_contact=feet,
+                                                episode_step=step, commands=context['commands'])
+    return next_state, issued_action, reward, 1 - failure, inputs
 
 
 def imagined_return(rewards, continuations, gamma):
@@ -374,8 +390,10 @@ class Trainer:
         terrain_scan = TerrainHeightScan(scene) if scene.get('height_maps') or scene.get('terrain_patches') or any(
             entity['type'] == 'box' for entity in scene['entities']
         ) else None
-        self.model = DynamicsModel(features.shape[-1], cfg.model_hidden,
-                                   wrench_links=len(self.wrench_link_indices), terrain_scan=terrain_scan).to(env.device)
+        self.model = DynamicsModel(
+            features.shape[-1], cfg.model_hidden, wrench_links=len(self.wrench_link_indices),
+            terrain_scan=terrain_scan, predict_contacts=env.walk_rewards is not None and env.walk_rewards.requires_contacts,
+        ).to(env.device)
         self.critic = Critic(ci.shape[-1], cfg.critic_hidden).to(env.device)
         push_spec = PointPushConfig.from_config(env.config)
         self.push_scheduler: PointPushScheduler | None = None
@@ -472,6 +490,8 @@ class Trainer:
                       'torque': transition.torque, 'terminated': transition.terminated,
                       'truncated': transition.truncated, 'features': features,
                       'reward': reward, 'is_driver': self.driver_mask.clone()}
+            if transition.contact_labels is not None:
+                record['contact_labels'] = transition.contact_labels
             if transition.action_delay_state is not None:
                 record['action_delay_steps'] = transition.action_delay_state.steps
                 record['action_queue'] = transition.action_delay_state.history
@@ -532,6 +552,8 @@ class Trainer:
         for _ in range(self.cfg.model_updates):
             window = self.replay.sample_windows(self.cfg.model_batch, self.cfg.model_window,
                                                 complete_frames=self.cfg.uses_official_schedule)
+            if self.model.contact_head is not None:
+                window.update(self.replay.sample_contacts(self.cfg.model_batch))
             if use_graph:
                 if self.graphed_model_backward is None:
                     with torch.cuda.device(self.env.device):

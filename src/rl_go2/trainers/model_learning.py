@@ -119,7 +119,7 @@ class DynamicsModel(nn.Module):
     """
 
     def __init__(self, features: int, hidden: tuple[int, ...], *, wrench_links: int = 0,
-                 terrain_scan: TerrainHeightScan | None = None) -> None:
+                 terrain_scan: TerrainHeightScan | None = None, predict_contacts: bool = False) -> None:
         super().__init__()
         self.wrench_links = wrench_links
         base_width = 35 + 12 + features
@@ -135,6 +135,13 @@ class DynamicsModel(nn.Module):
         # Begin near the empirical average increment after statistics warmup.
         nn.init.zeros_(self.net[-1].weight)
         nn.init.zeros_(self.net[-1].bias)
+        self.contact_head = nn.Linear(self.net[-1].in_features, 5) if predict_contacts else None
+        if self.contact_head is not None:
+            nn.init.zeros_(self.contact_head.weight)
+            nn.init.zeros_(self.contact_head.bias)
+            # Unsafe contact is rare. Avoid making most imagined steps terminal at initialization.
+            with torch.no_grad():
+                self.contact_head.bias[-1] = -4.0
 
     def _heading_features(
         self, features: torch.Tensor, frame: torch.Tensor, wrenches_world: torch.Tensor | None,
@@ -202,6 +209,14 @@ class DynamicsModel(nn.Module):
         wrenches_world: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Predict the next state and motor torque for optional per-link force/moment (N, N·m)."""
+        next_state, torque, _ = self.predict_transition(state, action, features, wrenches_world)
+        return next_state, torque
+
+    def predict_transition(
+        self, state: torch.Tensor, action: torch.Tensor, features: torch.Tensor,
+        wrenches_world: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+        """Also predict foot contact and prohibited-contact logits when enabled."""
         frame = heading(state[:, 3:7])
         before = local_state(state, frame)
         inputs = self._assemble_inputs(state, before, action, frame, features, wrenches_world)
@@ -211,14 +226,22 @@ class DynamicsModel(nn.Module):
             normalized.append(self.wrench_norm(inputs[:, base_width:self.wrench_end]))
         if self.terrain_norm is not None:
             normalized.append(self.terrain_norm(inputs[:, self.wrench_end:]))
-        raw = self.net(normalized[0] if len(normalized) == 1 else torch.cat(normalized, dim=-1))
+        hidden = normalized[0] if len(normalized) == 1 else torch.cat(normalized, dim=-1)
+        contact_logits = None
+        if self.contact_head is not None:
+            for index in range(len(self.net) - 1):
+                hidden = self.net[index](hidden)
+            contact_logits = self.contact_head(hidden)
+            raw = self.net[-1](hidden)
+        else:
+            raw = self.net(hidden)
         delta = raw * self.output_norm.scale() + self.output_norm.mean
         after = before[:, 1:] + delta[:, 3:STATE_DIM]
         q = canonical_quat(quat_mul(frame, canonical_quat(after[:, :4])))
         rotate = lambda v: rotate_inverse(conjugate(frame), v)
         next_state = torch.cat((state[:, :3] + rotate(delta[:, :3]), q,
                                 rotate(after[:, 4:7]), rotate(after[:, 7:10]), after[:, 10:]), -1)
-        return next_state, delta[:, STATE_DIM:]
+        return next_state, delta[:, STATE_DIM:], contact_logits
 
     def loss(self, window):
         state = window['state'][:, 0]
@@ -226,14 +249,21 @@ class DynamicsModel(nn.Module):
         total = state.new_zeros(())
         for j in range(window['action'].shape[1]):
             wrenches_world = None if wrenches is None else wrenches[:, j]
-            predicted, torque = self(state, window['action'][:, j], window['previous_action'][:, j],
-                                     window['features'][:, j], wrenches_world)
+            predicted, torque = self(
+                state, window['action'][:, j], window['previous_action'][:, j], window['features'][:, j], wrenches_world
+            )
             # Compare full autoregressive state, not only the current step's increment.
             error = self.targets(window['next_state'][:, j], predicted,
                                  torque - window['torque'][:, j]) / self.output_norm.scale()
             total = total + (error.square().mean(-1) * window['valid'][:, j]).sum()
             state = predicted
-        return total / window['valid'].sum().clamp(min=1)
+        loss = total / window['valid'].sum().clamp(min=1)
+        if self.contact_head is not None:
+            _, _, logits = self.predict_transition(window['contact/state'], window['contact/action'],
+                                                   window['contact/features'], window.get('contact/link_wrenches_world'))
+            assert logits is not None
+            loss = loss + F.binary_cross_entropy_with_logits(logits, window['contact/contact_labels'])
+        return loss
 
 
 class ReplayBuffer:
@@ -260,6 +290,15 @@ class ReplayBuffer:
         t = self._slots(torch.randint(self.size, (batch,), device=self.device))
         env = torch.randint(self.num_envs, (batch,), device=self.device)
         return {k: v[t, env] for k, v in self.data.items()}
+
+    def sample_contacts(self, batch: int) -> dict[str, torch.Tensor]:
+        """Draw single transitions, including failures excluded by complete dynamics windows."""
+        slots = self._slots(torch.randint(self.size, (batch,), device=self.device))
+        env_ids = torch.randint(self.num_envs, (batch,), device=self.device)
+        keys = ['state', 'action', 'features', 'contact_labels']
+        if 'link_wrenches_world' in self.data:
+            keys.append('link_wrenches_world')
+        return {f'contact/{key}': self.data[key][slots, env_ids] for key in keys}
 
     def sample_windows(self, batch, steps, *, complete_frames=False):
         if self.size < steps:

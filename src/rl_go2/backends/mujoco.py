@@ -10,7 +10,7 @@ import mujoco
 import numpy as np
 import torch
 
-from rl_go2.backends import LinkPointForces
+from rl_go2.backends import GroundContacts, LinkPointForces
 from rl_go2.config import FOOT_NAMES, foot_friction_ranges, joint_position_bounds
 from rl_go2.mujoco_visuals import brighten_scene
 from rl_go2.state import RobotState
@@ -78,10 +78,11 @@ class MujocoBackend:
         # Keep model-authored collision masks/self-collision rules and motor parameters.
         self.model = mujoco.MjModel.from_xml_string(ET.tostring(root, encoding="unicode"))
         self.data = mujoco.MjData(self.model)
+        self.surface_geom_ids = {self.model.geom(entity["id"]).id for entity in config["scene"]["entities"]
+                                 if not entity.get("robot")}
         if foot_friction_ranges(config) is not None:
             self.foot_ids = [self.model.geom(name).id for name in FOOT_NAMES]
-            surfaces = [self.model.geom(entity["id"]).id for entity in config["scene"]["entities"]
-                        if not entity.get("robot")]
+            surfaces = list(self.surface_geom_ids)
             has_explicit_pair = any(
                 (a in surfaces and b in self.foot_ids) or (b in surfaces and a in self.foot_ids)
                 for a, b in zip(self.model.pair_geom1, self.model.pair_geom2)
@@ -116,6 +117,31 @@ class MujocoBackend:
         self.reset(torch.tensor([0]))
         if viewer:
             self._open_viewer()
+
+    def configure_ground_contacts(self, exempt: tuple[str, ...]) -> None:
+        """Resolve the terrain and robot collision geometry used by the walking task."""
+        self.contact_feet = {self.model.geom(name).id: index for index, name in enumerate(FOOT_NAMES)}
+        self.contact_exempt = set(self.contact_feet) if "foot" in exempt else set()
+        if "lower_calf" in exempt:
+            self.contact_exempt.update(self.model.geom(f"{name}_calf_lower").id for name in FOOT_NAMES)
+        self.contact_wrench = np.empty(6)
+
+    def read_ground_contacts(self) -> GroundContacts:
+        """Read geometry contacts from the latest physics step."""
+        feet = torch.zeros((1, 4), dtype=torch.bool)
+        peak = 0.0
+        for index, contact in enumerate(self.data.contact):
+            a, b = contact.geom
+            a_surface, b_surface = a in self.surface_geom_ids, b in self.surface_geom_ids
+            if contact.efc_address < 0 or a_surface == b_surface:
+                continue
+            robot_geom = b if a_surface else a
+            if robot_geom in self.contact_feet:
+                feet[0, self.contact_feet[robot_geom]] = True
+            if robot_geom not in self.contact_exempt:
+                mujoco.mj_contactForce(self.model, self.data, index, self.contact_wrench)
+                peak = max(peak, float(np.linalg.norm(self.contact_wrench[:3])))
+        return GroundContacts(feet, torch.tensor([peak], dtype=torch.float32))
 
     def _open_viewer(self) -> None:
         """Start the passive window with a lit scene and a torso-tracking camera."""

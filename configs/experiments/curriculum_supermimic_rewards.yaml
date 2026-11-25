@@ -1,0 +1,66 @@
+scene: ../scenes/flat.yaml
+robot: ../robots/go2.yaml
+robot_overrides:
+  joint_position_limits:
+    FR_hip_joint: [-0.837758, 0.837758]  # radians, about ±48°
+    FL_hip_joint: [-0.837758, 0.837758]
+    RR_hip_joint: [-0.837758, 0.837758]
+    RL_hip_joint: [-0.837758, 0.837758]
+task: ../tasks/step_frequency_rewards.yaml
+backend: genesis
+device: cuda
+startup_gpu_reserve_gib: 70
+inductor_compile_threads: 48
+num_envs: 4096
+seed: 1
+curriculum:
+  name: none
+# Per-course budgets in SuperMimic training iterations.
+courses:
+  - config: ../courses/basic_motion.yaml
+    iterations: 10000
+  - config: ../courses/expanded_motion.yaml
+    iterations: 10000
+  - config: ../courses/observation_and_action.yaml
+    iterations: 10000
+  - config: ../courses/body_and_friction.yaml
+    iterations: 10000
+  - config: ../courses/point_push.yaml
+    iterations: 10000
+  - config: ../courses/terrain.yaml
+    iterations: 10000
+trainer:
+  name: supermimic
+  collect_steps: 1
+  buffer_steps: 1000
+  warmup_iterations: 0
+  world_model_warmup_iterations: 1000
+  condition_on_link_wrenches: true
+  model_hidden: [2048, 2048, 2048]
+  actor_hidden: [512, 256, 128]
+  critic_hidden: [256, 128]
+  model_window: 8
+  model_batch: 2048
+  model_updates: 10
+  imagination_batch: 4096
+  horizon: 32
+  critic_epochs: 5
+  critic_minibatches: 4
+  learning_rate: 0.0002
+  actor_learning_rate: 0.0002
+  tf32: true
+  fused_adam: true
+  compile_training: true
+  cuda_graph: true
+  bootstrap_weight: 1.0
+  driver_fraction: 0.5
+  gamma: 0.99
+  gae_lambda: 0.95
+  action_noise: 0.1
+  height_softness: 0.01
+  upright_softness: 0.03
+  save_interval: 1000
+  log_interval: 10
+  driver_policy: null
+  behavior_updates: 0
+  behavior_weight: 0.0

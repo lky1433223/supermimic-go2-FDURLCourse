@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 
 import torch
 
-from rl_go2.backends import LinkPointForces, make_backend
+from rl_go2.backends import GroundContacts, LinkPointForces, make_backend
 from rl_go2.config import load_experiment, load_scene
 from rl_go2.control import JointPositionControl
 from rl_go2.env import QuadrupedEnv
@@ -89,6 +89,32 @@ class ProbeTask:
 class FrameworkTests(unittest.TestCase):
     def setUp(self):
         self.config = load_experiment(ROOT / "configs/experiments/flat_ppo.yaml")
+
+    def test_contact_failure_keeps_substep_peak_and_can_skip_terminal_charge(self):
+        config = load_experiment(ROOT / 'configs/experiments/curriculum_supermimic_rewards.yaml')
+        config.update(backend='mujoco', device='cpu', num_envs=1)
+        task = config['task']
+        rewards = []
+        for weight in (0.0, -4.0):
+            task['reward']['failure']['weight'] = weight
+            env = QuadrupedEnv(config, record_transitions=True)
+            try:
+                robot = env.backend.model
+                self.assertIn(robot.geom('FL').id, env.backend.contact_exempt)
+                self.assertIn(robot.geom('FL_calf_lower').id, env.backend.contact_exempt)
+                feet = torch.ones((1, 4), dtype=torch.bool)
+                contacts = [GroundContacts(feet, torch.tensor([force])) for force in (11.0, 0.0, 0.0, 0.0)]
+                with patch.object(env.backend, 'read_ground_contacts', side_effect=contacts):
+                    observation, reward, done, extras = env.step(torch.zeros((1, 12)))
+                self.assertTrue(done.item())
+                self.assertTrue(extras['terminated'].item())
+                self.assertTrue(extras['prohibited_contact'].item())
+                self.assertEqual(extras['transition'].prohibited_contact_force_n.item(), 11.0)
+                self.assertEqual(observation.shape, (1, 45))
+                rewards.append(reward)
+            finally:
+                env.close()
+        torch.testing.assert_close(rewards[1] - rewards[0], torch.tensor([-4.0]))
 
     def test_training_terrain_weights_and_partial_reset(self):
         config = load_experiment(ROOT / 'configs/experiments/terrain_supermimic_push.yaml')

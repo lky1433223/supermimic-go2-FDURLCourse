@@ -12,6 +12,7 @@ from rl_go2.observations import SensorReadings
 from rl_go2.state import RobotState
 from rl_go2.step_delay import StepDelayState, action_delay_from_config
 from rl_go2.tasks import get_task_type
+from rl_go2.tasks.walk_rewards import WalkRewards
 
 
 @dataclass
@@ -29,6 +30,8 @@ class Transition:
     # (envs, links, 6), world force and moment about each authored link origin at step start.
     link_wrenches_world: torch.Tensor | None = None
     action_delay_state: StepDelayState | None = None  # Before receiving this step's command.
+    contact_labels: torch.Tensor | None = None  # FR, FL, RR, RL, prohibited contact.
+    prohibited_contact_force_n: torch.Tensor | None = None
 
 
 class QuadrupedEnv:
@@ -53,6 +56,11 @@ class QuadrupedEnv:
         )
         self.task = task_type(config["task"], self.controller.default, self.num_envs,
                               self.device, self.dt, config["seed"])
+        self.walk_rewards = None
+        if config["task"]["name"] in ("flat_walk", "push_walk"):
+            self.walk_rewards = WalkRewards(config["task"], config["robot"], self.controller.default, self.dt)
+        if self.walk_rewards is not None and self.walk_rewards.requires_contacts:
+            self.backend.configure_ground_contacts(self.walk_rewards.exempt)
         self.episode_length_buf = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.episode_return = torch.zeros(self.num_envs, device=self.device)
         self.previous_action = torch.zeros(self.num_envs, self.num_actions, device=self.device)
@@ -127,6 +135,8 @@ class QuadrupedEnv:
 
     def advance_context(self, context, state):
         context = self.task.advance_context(context, state)
+        if "episode_step" in context:
+            context["episode_step"] = context["episode_step"] + 1
         if self.friction_switch_steps is None:
             return context
         left = context["friction_steps_left"] - 1
@@ -141,6 +151,8 @@ class QuadrupedEnv:
 
     def model_context(self):
         context = self.task.context()
+        if self.walk_rewards is not None and self.walk_rewards.gait_weight:
+            context["episode_step"] = self.episode_length_buf
         if self.foot_friction is not None:
             context["foot_ground_friction"] = self.foot_friction
         if self.friction_switch_steps is not None:
@@ -257,6 +269,10 @@ class QuadrupedEnv:
             applied_action = self.action_delay.select(issued_action, delay_state)
             next_delay_state = self.action_delay.advance(issued_action, delay_state)
         target = self.controller.position_target(applied_action)
+        walk = self.walk_rewards
+        track_contacts = walk is not None and walk.requires_contacts
+        peak_contact_force = torch.zeros_like(self.episode_return) if track_contacts else None
+        contacts = None
         for _ in range(self.config["robot"]["control_decimation"]):
             torque = self.controller.torque(target, self.state)
             if link_point_forces is not None:
@@ -266,10 +282,28 @@ class QuadrupedEnv:
             else:
                 self.backend.step(torque, base_force=base_force)
             self.state = self.backend.read_state()
+            if peak_contact_force is not None:
+                contacts = self.backend.read_ground_contacts()
+                peak_contact_force = torch.maximum(peak_contact_force, contacts.prohibited_force_n)
         self.episode_length_buf += 1
         self.environment_steps += self.num_envs
         reward = self.task.reward(self.state, issued_action, self.previous_action, torque)
         terminated = self.task.terminated(self.state)
+        contact_labels = None
+        contact_failure = None
+        if walk is not None:
+            feet = None
+            if contacts is not None:
+                assert peak_contact_force is not None
+                contact_failure = peak_contact_force > walk.force_threshold_n
+                feet = contacts.feet.to(reward.dtype)
+                contact_labels = torch.cat((feet, contact_failure[:, None].to(reward.dtype)), dim=-1)
+                if walk.contact_enabled:
+                    terminated = terminated | contact_failure
+            if walk.failure_weight or walk.posture_weight or walk.gait_weight:
+                commands = self.task.context()["commands"] if walk.gait_weight else None
+                reward = reward + walk.extra_reward(self.state.joint_position, terminated, foot_contact=feet,
+                                                    episode_step=self.episode_length_buf, commands=commands)
         truncated = (self.episode_length_buf >= self.max_episode_length) & ~terminated
         done = terminated | truncated
         self.episode_return += reward
@@ -281,11 +315,15 @@ class QuadrupedEnv:
             readings = SensorReadings.from_state(self.state)
             self._sensor_readings, self.noise_history = self.observation_noise.apply(readings, self.noise_history)
         extras = {"time_outs": truncated, "terminated": terminated, "truncated": truncated}
+        if contact_failure is not None:
+            extras["prohibited_contact"] = contact_failure
+            extras["prohibited_contact_force_n"] = peak_contact_force
         # Allocate only when needed; buffers returned to the learner never alias future in-place updates.
         if self.record_transitions:
             extras["transition"] = Transition(old_state.clone(), applied_action.clone(), self.state.clone(),
                                                context, terminated.clone(), truncated.clone(),
-                                               old_action, torque.detach().clone(), link_wrenches_world, delay_state)
+                                               old_action, torque.detach().clone(), link_wrenches_world, delay_state,
+                                               contact_labels, peak_contact_force)
         done_ids = done.nonzero(as_tuple=False).flatten()
         if self.friction_switch_steps is not None:
             self.friction_steps_left.sub_(1)

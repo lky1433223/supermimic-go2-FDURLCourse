@@ -1,6 +1,6 @@
 import torch
 
-from rl_go2.backends import LinkPointForces
+from rl_go2.backends import GroundContacts, LinkPointForces
 from rl_go2.config import (
     FOOT_NAMES,
     base_com_offset_ranges,
@@ -53,9 +53,9 @@ class GenesisBackend:
                 else:
                     morph = gs.morphs.Box(size=tuple(entity["size"]), fixed=True, **kwargs)
                 surface = self.scene.add_entity(morph, material=gs.materials.Rigid(friction=entity.get("friction", 0.8)))
-                if friction_enabled:
-                    surfaces.append(surface)
+                surfaces.append(surface)
         self.scene.build(n_envs=self.num_envs)
+        self.surface_geom_ids = [geom.idx for surface in surfaces for geom in surface.geoms]
         self.friction_ratios = None
         if friction_enabled:
             # Genesis can reuse metadata from identical sphere meshes. Identify
@@ -76,6 +76,41 @@ class GenesisBackend:
         self.link_names = tuple(link.name for link in links)
         self._link_indices = [link.idx_local for link in links]
         self.reset(torch.arange(self.num_envs, device=self.device))
+
+    def configure_ground_contacts(self, exempt: tuple[str, ...]) -> None:
+        """Resolve Go2 feet and exempt calf collision geometries."""
+        feet, lower_calves = [], []
+        for name in FOOT_NAMES:
+            geoms = self.robot.get_link(f"{name}_calf").geoms
+            spheres = [geom for geom in geoms if geom.type == self.gs.GEOM_TYPE.SPHERE]
+            cylinders = [geom for geom in geoms if geom.type == self.gs.GEOM_TYPE.CYLINDER]
+            if len(spheres) != 1 or len(cylinders) != 2:
+                raise ValueError("Expected one sphere and two cylinders on each Go2 calf")
+            feet.append(spheres[0].idx)
+            lower_calves.append(min(cylinders, key=lambda geom: geom.init_pos[2]).idx)
+        self.contact_feet = torch.tensor(feet, device=self.device)
+        count = self.scene.rigid_solver.n_geoms
+        self.contact_exempt = torch.zeros(count, dtype=torch.bool, device=self.device)
+        if "foot" in exempt:
+            self.contact_exempt[feet] = True
+        if "lower_calf" in exempt:
+            self.contact_exempt[lower_calves] = True
+        self.contact_surfaces = torch.zeros_like(self.contact_exempt)
+        self.contact_surfaces[self.surface_geom_ids] = True
+
+    def read_ground_contacts(self) -> GroundContacts:
+        """Read batched geometry contacts from the latest physics step."""
+        contacts = self.robot.get_contacts(exclude_self_contact=True, is_padded=True)
+        valid = contacts["valid_mask"]
+        a = contacts["geom_a"].masked_fill(~valid, 0).long()
+        b = contacts["geom_b"].masked_fill(~valid, 0).long()
+        a_surface, b_surface = self.contact_surfaces[a], self.contact_surfaces[b]
+        valid = valid & (a_surface ^ b_surface)
+        robot_geom = torch.where(a_surface, b, a)
+        feet = ((robot_geom[..., None] == self.contact_feet) & valid[..., None]).any(dim=1)
+        prohibited = valid & ~self.contact_exempt[robot_geom]
+        force = contacts["force_a"].norm(dim=-1).masked_fill(~prohibited, 0.0)
+        return GroundContacts(feet, force.amax(dim=1))
 
     def set_foot_ground_friction(self, base, multipliers):
         # Genesis takes the per-component max of the two scaled geoms.

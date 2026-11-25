@@ -7,6 +7,7 @@ from rl_go2.config import MODEL_PARAMETER_KEYS
 from rl_go2.state import rotate_inverse
 from rl_go2.observations import OBSERVATION_TERMS, SensorReadings, policy_observation
 from rl_go2.state import RobotState
+from rl_go2.tasks.walk_rewards import walk_config
 
 
 class FlatWalkTask:
@@ -16,6 +17,7 @@ class FlatWalkTask:
 
     @staticmethod
     def validate_config(config, robot):
+        config = walk_config(config)
         if len(robot["joint_names"]) != 12:
             raise ValueError("flat_walk expects a 12-joint quadruped")
         for key in ("command_resample_seconds", "tracking_sigma"):
@@ -35,7 +37,7 @@ class FlatWalkTask:
             raise ValueError("Turn-in-place sampling requires a nonzero yaw command in command_ranges")
 
     def __init__(self, config, default_positions, num_envs, device, dt, seed):
-        self.config = config
+        self.config = walk_config(config)
         self.default = default_positions
         self.device = device
         self.dt = dt

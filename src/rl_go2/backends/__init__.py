@@ -1,9 +1,16 @@
 from dataclasses import dataclass
-from typing import Protocol
+from typing import NamedTuple, Protocol
 
 import torch
 
 from rl_go2.state import RobotState, rotate_inverse
+
+
+class GroundContacts(NamedTuple):
+    """Per-environment foot contacts (FR, FL, RR, RL) and prohibited force in N."""
+
+    feet: torch.Tensor
+    prohibited_force_n: torch.Tensor
 
 
 @dataclass(frozen=True)
@@ -40,6 +47,8 @@ class PhysicsBackend(Protocol):
     link_names: tuple[str, ...]
 
     def read_state(self) -> RobotState: ...
+    def configure_ground_contacts(self, exempt: tuple[str, ...]) -> None: ...
+    def read_ground_contacts(self) -> GroundContacts: ...
     def read_link_quaternions(self) -> torch.Tensor:
         """Return world orientations of authored link frames as (num_envs, num_links, 4), wxyz."""
         ...

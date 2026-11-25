@@ -22,6 +22,11 @@ def initialize_weights(trainer: "Trainer", checkpoint: Path) -> None:
 
     model_state = dict(saved["world_model"])
     target_state = trainer.model.state_dict()
+    for key in ('contact_head.weight', 'contact_head.bias'):
+        if key in target_state:
+            model_state.setdefault(key, target_state[key])
+        else:
+            model_state.pop(key, None)
     if trainer.model.wrench_norm is not None:
         _initialize_wrench_inputs(model_state, target_state)
     if trainer.model.terrain_norm is not None and 'terrain_norm.mean' not in model_state:
