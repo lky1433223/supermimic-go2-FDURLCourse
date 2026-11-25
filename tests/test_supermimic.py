@@ -72,15 +72,15 @@ class SuperMimicTests(unittest.TestCase):
             self.assertNotEqual(int(pool), int(initial[1]))
             before = driver.cuMemPoolGetAttribute(pool, attributes.CU_MEMPOOL_ATTR_RESERVED_MEM_CURRENT)
             self.assertEqual(before[0], success)
-            self.assertGreaterEqual(before[1], 128 * 1024 ** 2)
+            self.assertGreaterEqual(int(before[1]), 128 * 1024 ** 2)
             status, ptr = driver.cuMemAllocAsync(64 * 1024 ** 2, handle)
             self.assertEqual(status, success)
             try:
                 stream.synchronize()
                 used = driver.cuMemPoolGetAttribute(pool, attributes.CU_MEMPOOL_ATTR_USED_MEM_CURRENT)
-                self.assertEqual(used, (success, 64 * 1024 ** 2))
-                self.assertEqual(driver.cuMemPoolGetAttribute(pool, attributes.CU_MEMPOOL_ATTR_RESERVED_MEM_CURRENT),
-                                 before)
+                self.assertEqual((used[0], int(used[1])), (success, 64 * 1024 ** 2))
+                after = driver.cuMemPoolGetAttribute(pool, attributes.CU_MEMPOOL_ATTR_RESERVED_MEM_CURRENT)
+                self.assertEqual((after[0], int(after[1])), (success, int(before[1])))
             finally:
                 self.assertEqual(driver.cuMemFreeAsync(ptr, handle), (success,))
                 stream.synchronize()

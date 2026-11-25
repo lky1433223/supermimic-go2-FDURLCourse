@@ -38,7 +38,8 @@ def reserve_startup_memory(size_gib: float) -> Iterator[None]:
 
     (previous_pool,) = _cuda_call(driver.cuDeviceGetMemPool, device.index)
     size_bytes = max(1, int(size_gib * gib))
-    threshold = ctypes.c_uint64(2**64 - 1)
+    threshold = driver.cuuint64_t()
+    ctypes.c_uint64.from_address(threshold.getPtr()).value = 2**64 - 1
     attributes = driver.CUmemPool_attribute
     properties = driver.CUmemPoolProps()
     properties.allocType = driver.CUmemAllocationType.CU_MEM_ALLOCATION_TYPE_PINNED
@@ -46,14 +47,14 @@ def reserve_startup_memory(size_gib: float) -> Iterator[None]:
     properties.location.id = device.index
     (pool,) = _cuda_call(driver.cuMemPoolCreate, properties)
     try:
-        _cuda_call(driver.cuMemPoolSetAttribute, pool, attributes.CU_MEMPOOL_ATTR_RELEASE_THRESHOLD,
-                   ctypes.addressof(threshold))
+        _cuda_call(driver.cuMemPoolSetAttribute, pool, attributes.CU_MEMPOOL_ATTR_RELEASE_THRESHOLD, threshold)
         stream = torch.cuda.current_stream(device)
         handle = driver.CUstream(stream.cuda_stream)
         (allocation,) = _cuda_call(driver.cuMemAllocFromPoolAsync, size_bytes, pool, handle)
         _cuda_call(driver.cuMemFreeAsync, allocation, handle)
         stream.synchronize()
         (reserved,) = _cuda_call(driver.cuMemPoolGetAttribute, pool, attributes.CU_MEMPOOL_ATTR_RESERVED_MEM_CURRENT)
+        reserved = int(reserved)
         if reserved < size_bytes:
             raise RuntimeError(f"CUDA pool retained only {reserved / gib:.2f} of {size_gib:g} GiB on {device}")
         # Genesis can trim the device's default pool. Keep the reservation in
