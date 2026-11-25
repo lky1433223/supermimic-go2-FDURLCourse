@@ -1,5 +1,5 @@
 domain_randomization:
-  action_delay_steps: [0, 2]  # Uniform per episode, independent of sensor delay (0, 20 or 40 ms).
+  action_delay_steps: [0, 1]  # Uniform per episode, independent of sensor delay (0 or 20 ms).
   # Unitree Go2 RL Lab uniform-noise bounds, before actor scaling.
   observation_noise:
     frame_delay_steps: [0, 1]  # Uniform per episode, shared across sensors (0 or 20 ms).
