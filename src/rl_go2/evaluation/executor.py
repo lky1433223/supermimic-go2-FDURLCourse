@@ -36,7 +36,10 @@ def execute_trial(env: QuadrupedEnv, policy, seed: int, trial: Trial, video,
     phases = trial.condition.phase_schedule(env.dt)
     metrics = METRICS[trial.metrics](env, trial)
     loads = None
-    recovery = PushRecoveryMetrics(push_event, env.dt) if push_event is not None else None
+    recovery = None
+    onset_step = None
+    push_end_step = None
+    applied_steps = 0
     for step in range(budget):
         if step in commands:
             command = commands[step]
@@ -45,10 +48,14 @@ def execute_trial(env: QuadrupedEnv, policy, seed: int, trial: Trial, video,
         if step in phases:
             trial.condition.apply_phase(env, phases[step])
         action = policy(env.observe())
-        if push_event is not None and push_event.start_step <= step < push_event.end_step:
-            if loads is None:
-                loads = push_event.loads(env)
+        if push_event is not None and onset_step is None and push_event.ready(step, env.state.position[0]):
+            onset_step = step
+            push_end_step = step + push_event.duration_steps
+            loads = push_event.loads(env)
+            recovery = PushRecoveryMetrics(push_end_step, env.dt)
+        if push_end_step is not None and step < push_end_step:
             observation, reward, done, extras = env.step(action, link_point_forces=loads)
+            applied_steps += 1
         else:
             observation, reward, done, extras = env.step(action)
         transition = extras['transition']
@@ -64,10 +71,21 @@ def execute_trial(env: QuadrupedEnv, policy, seed: int, trial: Trial, video,
         if finished:
             break
     result = metrics.finish(env)
-    if recovery is not None:
-        result['push_recovery'] = recovery.finish(step + 1, result['fell'])
-        if loads is not None:
-            result['push_recovery']['force_world_n'] = loads.force_world_n[0].sum(dim=0).tolist()
+    if push_event is not None:
+        if recovery is None:
+            recovery_result = {
+                'status': 'fell_before_push' if result['fell'] else 'not_triggered',
+                'recovery_seconds': None,
+            }
+        else:
+            recovery_result = recovery.finish(result['fell'])
+            recovery_result.update(start_step=onset_step, start_seconds=onset_step * env.dt,
+                                   end_step=push_end_step, applied_steps=applied_steps,
+                                   force_world_n=loads.force_world_n[0].sum(dim=0).tolist())
+        result['push_recovery'] = recovery_result
+        if 'success' in result and recovery_result['status'] != 'recovered':
+            result['success'] = False
+            result['failure_reasons'].append(f"push_{recovery_result['status']}")
     if trial.scene is not None:
         result['scene'] = trial.scene
     return {'seed': seed, 'condition': trial.condition.name, **result}

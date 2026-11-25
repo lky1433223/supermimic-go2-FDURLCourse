@@ -17,8 +17,8 @@ RECOVERY_CRITERIA = {
 class PushRecoveryMetrics:
     """Track disturbances and the first sustained return to commanded motion."""
 
-    def __init__(self, event, dt):
-        self.event = event
+    def __init__(self, end_step: int, dt: float):
+        self.end_step = end_step
         self.dt = dt
         self.hold_steps = math.ceil(RECOVERY_CRITERIA['hold_seconds'] / dt)
         self.hold = 0
@@ -27,8 +27,6 @@ class PushRecoveryMetrics:
         self.peak_planar_error = 0.0
 
     def update(self, env, transition, step) -> None:
-        if step < self.event.start_step:
-            return
         state = transition.next_state
         linear, angular, gravity = env.task.body_state(state)
         command = transition.context['commands'][0]
@@ -37,7 +35,7 @@ class PushRecoveryMetrics:
         tilt = math.degrees(math.acos((-gravity[0, 2]).clamp(-1, 1).item()))
         self.peak_tilt_deg = max(self.peak_tilt_deg, tilt)
         self.peak_planar_error = max(self.peak_planar_error, planar_error)
-        if step < self.event.end_step or self.recovery_seconds is not None:
+        if step < self.end_step or self.recovery_seconds is not None:
             return
         stable = (
             planar_error < RECOVERY_CRITERIA['planar_velocity_error_m_s']
@@ -47,11 +45,9 @@ class PushRecoveryMetrics:
         )
         self.hold = self.hold + 1 if stable else 0
         if self.hold >= self.hold_steps:
-            self.recovery_seconds = (step + 1 - self.event.end_step) * self.dt
+            self.recovery_seconds = (step + 1 - self.end_step) * self.dt
 
-    def finish(self, steps: int, fell: bool) -> dict:
-        if steps <= self.event.start_step:
-            return {'status': 'fell_before_push', 'recovery_seconds': None}
+    def finish(self, fell: bool) -> dict:
         if fell:
             status = 'fell_after_push_onset'
         elif self.recovery_seconds is None:

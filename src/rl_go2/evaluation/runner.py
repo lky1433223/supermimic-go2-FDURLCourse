@@ -138,7 +138,8 @@ def run_evaluation(args, task):
     if push_events:
         metadata['point_push_events'] = [
             {'seed': seed, 'condition': condition, 'case': case,
-             **({'scene': scene, 'group': group} if scene is not None else {}), **asdict(event)}
+             **({'scene': scene, 'group': group} if scene is not None else {}),
+             **asdict(event), 'end_step': event.end_step}
             for (seed, scene, group, condition, case), event in push_events.items()
         ]
     motions = {}

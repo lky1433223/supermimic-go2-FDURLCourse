@@ -105,8 +105,9 @@ class EvaluationTests(unittest.TestCase):
         config = {'scene': step_scene, 'robot': {'entity_id': robot['id']}}
         for name, task in TASKS.items():
             with self.subTest(task=name):
-                scene = configure_evaluation_scene(config, task.build_plan())['scene']
-                if name == 'terrain':
+                plan = task.build_plan()
+                scene = configure_evaluation_scene(config, plan)['scene']
+                if plan.scenes:
                     self.assertIs(scene, step_scene)
                     continue
                 ground, flat_robot = scene['entities']
@@ -122,7 +123,7 @@ class EvaluationTests(unittest.TestCase):
             'action_delay_steps': [0, 2], 'observation_noise': {'frame_delay_steps': [0, 1]},
         }}
         for name, task in TASKS.items():
-            if name == 'sensor-action':
+            if name in ('sensor-action', 'combined'):
                 continue
             for trial in task.build_plan().trials:
                 domain = trial.condition.apply(config)['domain_randomization']
@@ -257,7 +258,7 @@ class EvaluationTests(unittest.TestCase):
         expected_commands = {(0, 0, 0), (0.5, 0, 0), (-0.5, 0, 0), (0, 0.5, 0),
                              (0, 0, 0.5), (2, 0, 0), (0.5, 0, 0.5), (0.5, 0, -0.5)}
         for name, task in TASKS.items():
-            if name in ('rich-motion', 'terrain'):
+            if name in ('rich-motion', 'terrain', 'combined'):
                 continue
             groups = {}
             for trial in task.build_plan().trials:
@@ -388,6 +389,58 @@ class EvaluationTests(unittest.TestCase):
             self.assertEqual(set(events), expected.keys())
             self.assertEqual(len({event.point_local_m for event in events.values() if event.link_name == 'base'}), 1)
             self.assertNotEqual(events['foot-20n-draw-1'].link_name, events['foot-20n-draw-2'].link_name)
+
+    def test_combined_push_starts_only_inside_rough_ground(self):
+        plan = TASKS['combined'].build_plan()
+        self.assertCountEqual([trial.motion.command for trial in plan.trials], [
+            (0.5, 0, 0), (0, 0.5, 0), (2.0, 0, 0),
+        ])
+        trial = next(trial for trial in plan.trials if trial.name == 'forward_2.0')
+        config = plan.scene_config({'robot': {'base_link': 'base'}}, trial)
+        geometry = SimpleNamespace(sample_points=lambda directions: directions)
+        event = sample_event(config, geometry, 0.02, trial, 1)
+        self.assertIsNone(event.start_step)
+        self.assertEqual(event.duration_steps, 10)
+        self.assertEqual(event.force_n, (0.0, 100.0, 0.0))
+        noise_and_delay = trial.condition.apply({})['domain_randomization']
+        self.assertEqual(noise_and_delay['observation_noise']['frame_delay_steps'], [1, 1])
+        self.assertEqual(noise_and_delay['action_delay_steps'], (1, 1))
+
+        for enters in (False, True):
+            with self.subTest(enters=enters):
+                observation = torch.zeros(1, 2)
+                done = torch.tensor([False])
+                state = SimpleNamespace(position=torch.tensor([[0.0, 0.7, 0.42]]),
+                                        quaternion=torch.tensor([[1.0, 0, 0, 0]]))
+                env = SimpleNamespace(
+                    dt=0.02, state=state, reset=lambda: None, observe=lambda: observation,
+                    backend=SimpleNamespace(link_names=['base']), num_envs=1,
+                    task=SimpleNamespace(commands=torch.zeros(1, 3), body_state=lambda state: (
+                        torch.tensor([[2.0, 0, 0]]), torch.zeros(1, 3), torch.tensor([[0.0, 0, -1.0]]),
+                    )),
+                    foot_friction=None, base_mass_kg=None, base_com_offset_m=None,
+                )
+                applied = []
+                steps = 0
+
+                def step(action, *, link_point_forces=None):
+                    nonlocal steps
+                    if link_point_forces is not None:
+                        applied.append(steps)
+                    steps += 1
+                    x = min(steps * 0.1, 1.0)
+                    y = 0.0 if enters and steps >= 12 else 0.7
+                    state.position = torch.tensor([[x, y, 0.42]])
+                    transition = SimpleNamespace(next_state=state, terminated=done,
+                                                 context={'commands': env.task.commands})
+                    return observation, torch.ones(1), done, {'transition': transition}
+
+                env.step = step
+                result = execute_trial(env, lambda obs: obs, 1, trial, None, push_event=event)
+                recovery = result['push_recovery']
+                self.assertEqual(applied, list(range(12, 22)) if enters else [])
+                self.assertEqual(recovery['status'], 'recovered' if enters else 'not_triggered')
+                self.assertEqual(result['success'], enters)
 
     def test_motion_and_friction_events_use_their_own_schedules(self):
         switch = FrictionSwitchTask().build_plan()

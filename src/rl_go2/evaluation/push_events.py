@@ -23,18 +23,32 @@ class PushSpec:
     force_n: float
     duration_seconds: float = 0.20
     foot_draw: int = 0
+    trigger_height_map: str | None = None
 
 
 @dataclass(frozen=True)
 class PushEvent:
     """A local contact point and a force in world or onset-heading coordinates."""
 
-    start_step: int
-    end_step: int
+    start_step: int | None
+    duration_steps: int
     link_name: str
     point_local_m: tuple[float, float, float]
     force_n: tuple[float, float, float]
     force_frame: Literal['world', 'heading']
+    entry_bounds_xy_m: tuple[float, float, float, float] | None = None
+
+    @property
+    def end_step(self) -> int | None:
+        return None if self.start_step is None else self.start_step + self.duration_steps
+
+    def ready(self, step: int, position: torch.Tensor) -> bool:
+        """Trigger at the scheduled step or on first entry of the base into the region."""
+        if self.entry_bounds_xy_m is None:
+            return step == self.start_step
+        x_min, x_max, y_min, y_max = self.entry_bounds_xy_m
+        x, y = position[:2].tolist()
+        return x_min <= x < x_max and y_min <= y < y_max
 
     def loads(self, env: 'QuadrupedEnv') -> LinkPointForces:
         """Resolve force in world coordinates at push onset and hold it fixed."""
@@ -77,13 +91,25 @@ def sample_event(config: dict, geometry: Go2PushGeometry, dt: float, trial: 'Tri
         torch.random.default_generator.manual_seed(rng.getrandbits(63))
         point = tuple(geometry.sample_points(directions)[0, index].tolist())
 
-    stop = trial.motion.stop_at_seconds
-    start = round((5.0 if stop is None else stop + 2.0) / dt)
-    end = start + max(1, round(spec.duration_seconds / dt))
-    if end >= math.ceil(trial.motion.duration_seconds / dt):
+    duration_steps = max(1, round(spec.duration_seconds / dt))
+    entry_bounds = None
+    start = None
+    if spec.trigger_height_map is None:
+        stop = trial.motion.stop_at_seconds
+        start = round((5.0 if stop is None else stop + 2.0) / dt)
+    else:
+        height_map = config['scene'].get('height_maps', {}).get(spec.trigger_height_map)
+        if height_map is None:
+            raise ValueError(f'Point push requires height map {spec.trigger_height_map!r} in the trial scene')
+        heights = height_map['height_map_m']
+        tile = height_map['tile_size_m']
+        x_min, y_center = height_map['start_x_m'], height_map['center_y_m']
+        half_width = len(heights[0]) * tile / 2
+        entry_bounds = (x_min, x_min + len(heights) * tile, y_center - half_width, y_center + half_width)
+    if (start or 0) + duration_steps >= math.ceil(trial.motion.duration_seconds / dt):
         raise ValueError(f'{trial.name} must leave time for recovery after the push')
-    return PushEvent(start, end, link, point, tuple(axis * spec.force_n for axis in direction),
-                     'heading' if index == 0 else 'world')
+    return PushEvent(start, duration_steps, link, point, tuple(axis * spec.force_n for axis in direction),
+                     'heading' if index == 0 else 'world', entry_bounds)
 
 
 def build_push_events(config: dict, plan: 'EvaluationPlan', seeds: list[int]) -> dict[tuple, PushEvent]:
