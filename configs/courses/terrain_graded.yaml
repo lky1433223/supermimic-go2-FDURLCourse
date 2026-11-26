@@ -1,0 +1,30 @@
+terrain_curriculum:
+  initial_max_level: 3
+  pass_streak: 2
+  fail_streak: 2
+  hold_seconds: 0.5
+  top_review_probability: 0.10
+  spawn_half_width_m: 1.0
+terrains:
+  step:
+    weight: 1
+    height_levels_m: [0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.10]
+    length_m: 0.60
+  ramp:
+    weight: 1
+    slope_levels_deg: [5.0, 7.0, 9.0, 11.0, 12.5, 14.0, 16.0, 18.0, 20.0]
+    run_m: 0.80
+    platform_length_m: 0.60
+  stairs:
+    weight: 1
+    step_height_levels_m: [0.020, 0.025, 0.030, 0.035, 0.040, 0.045, 0.050, 0.055, 0.060]
+    tread_depth_m: 0.30
+    num_steps: 10
+  rough_ground:
+    weight: 1
+    map_count: 2
+    seed: 201
+    tile_size_m: 0.30
+    height_increment_m: 0.005
+    max_height_levels: [2, 3, 4, 5, 6, 7, 8, 9, 10]
+    max_adjacent_delta_levels: [1, 1, 2, 2, 3, 4, 5, 5, 6]

@@ -458,6 +458,7 @@ class Trainer:
         rewards, dones, driver_rewards = [], [], []
         push_counts = []
         task_metrics = {}
+        terrain_metrics = {}
         for index in range(self.cfg.collect_steps):
             obs = self.env.observe()
             sensor_record = {}
@@ -481,6 +482,12 @@ class Trainer:
             else:
                 (_, reward, done, extras), push_record = self._collect_push_step(action)
                 push_counts.append(extras['transition'].link_wrenches_world[..., :3].ne(0).any(dim=-1).sum(dim=-1))
+            terrain = extras.get('terrain_curriculum')
+            if terrain is not None:
+                for name in ('passed', 'failed', 'skipped'):
+                    terrain_metrics[name] = terrain_metrics.get(name, 0.0) + terrain[name]
+                terrain_metrics['mean_level'] = terrain['mean_level']
+                terrain_metrics['level_9_fraction'] = terrain['level_9_fraction']
             transition = extras['transition']
             features = self.env.task.model_features(transition.state, transition.context)
             record = {'state': pack(transition.state), 'next_state': pack(transition.next_state),
@@ -518,6 +525,7 @@ class Trainer:
         result = {'real_reward': torch.stack(rewards).mean().item(),
                   'reset_fraction': torch.stack(dones).mean().item()}
         result.update({f'real/{name}': torch.stack(values).mean().item() for name, values in task_metrics.items()})
+        result.update({f'terrain/{name}': value for name, value in terrain_metrics.items()})
         if driver_rewards:
             result['driver_reward'] = torch.stack(driver_rewards).mean().item()
         if push_counts:

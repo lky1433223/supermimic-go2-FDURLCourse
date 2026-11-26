@@ -532,7 +532,18 @@ Actor、Critic、奖励和终止仍使用原有定义。机器人控制配置一
 生成结果与各地块出生位姿写入生效配置，地块沿 Y 方向间隔 20 m。
 环境重置时按权重重新选择地块并设置出生位姿。单次运行的碰撞几何固定。
 实验中的物理随机化和速度任务继续由 `domain_randomization` 与 `task` 配置。
-地形课程和基于地形的奖励、终止规则留待后续设计。
+
+### 第六阶段的包围式地形课程
+
+`configs/experiments/curriculum_supermimic_rewards_graded.yaml` 的最后一阶段引用
+`configs/courses/terrain_graded.yaml`，将并行环境分配给单台阶、坡道、连续楼梯和起伏地面。
+使用 `--course terrain_graded` 可以只启动这一阶段。原来的 `configs/courses/terrain.yaml` 供现有实验继续使用固定权重抽样。
+每类地形有 0–9 级，环境初始从 0–3 级均匀抽样。0 级是平地，首次通过后升到 1 级；随后只在同类障碍的 1–9 级间升降。
+机器人从地块中心出生，四周都有障碍，保留每 4 秒的随机指令。以机身越过地形外缘后连续 0.5 秒未摔倒为通过。
+进入障碍后摔倒，或理想指令轨迹足以越过外缘而实际没通过，记作有效失败；指令距离不足的回合不改变等级或连续计数。
+连续两次通过或有效失败升降一级。9 级每次通过有 10% 概率从同类的 1–8 级均匀抽一级。
+训练指标按重置批次记录 `terrain/mean_level`、`terrain/level_9_fraction`、`terrain/passed`、`terrain/failed` 和 `terrain/skipped`。
+
 若引入执行延迟，需把真正的执行器状态加入动力学状态，不能用无约束 previous_action 快捷输入代替。
 
 输出目录必须不存在，保存完整配置、策略约定、资产哈希、逐轮 `metrics.jsonl` 和网络/优化器 checkpoint。

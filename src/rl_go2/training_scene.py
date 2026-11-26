@@ -8,18 +8,22 @@ from random import Random
 import yaml
 
 from rl_go2.scene_geometry import resolve_terrain_entities
+from rl_go2.surround_terrain import build_curriculum_patches
 
 
 def build_training_scene(spec: dict, robot: dict, robot_path: Path, seed: int) -> dict:
     """Expand terrain categories into separated patches and weighted spawn points."""
-    if spec.keys() - {'sim_options', 'terrains'}:
-        raise ValueError('Training scene supports sim_options and terrains')
+    if spec.keys() - {'sim_options', 'terrains', 'terrain_curriculum'}:
+        raise ValueError('Unsupported training scene settings')
     terrains = spec.get('terrains', {})
     if not terrains or terrains.keys() - {'flat', 'step', 'stairs', 'ramp', 'rough_ground'}:
         raise ValueError('Choose at least one supported training terrain')
+    if 'terrain_curriculum' in spec:
+        geometry, patches, maps = build_curriculum_patches(terrains, spec['terrain_curriculum'], seed)
+        return _assemble_scene(spec, robot, robot_path, geometry, patches, maps)
+
     scene_dir = Path(__file__).resolve().parents[2] / 'configs/scenes'
-    entities = [{'id': 'ground', 'type': 'plane', 'position': [0, 0, 0],
-                 'rotation': [1, 0, 0, 0], 'fixed': True, 'friction': 0.8}]
+    entities = []
     patches = []
     maps = {}
     rng = Random(seed ^ 0x54455252)
@@ -66,8 +70,19 @@ def build_training_scene(spec: dict, robot: dict, robot_path: Path, seed: int) -
             geometry, height_maps = resolve_terrain_entities([entity], {})
             entities.extend(geometry)
             maps.update(height_maps)
+    return _assemble_scene(spec, robot, robot_path, entities, patches, maps)
+
+
+def _assemble_scene(
+    spec: dict, robot: dict, robot_path: Path, geometry: list[dict], patches: list[dict], height_maps: dict,
+) -> dict:
+    ground = {'id': 'ground', 'type': 'plane', 'position': [0, 0, 0],
+              'rotation': [1, 0, 0, 0], 'fixed': True, 'friction': 0.8}
     model_file = (robot_path.parent / robot['file']).resolve()
-    entities.append({'id': robot['entity_id'], 'type': 'mjcf', 'robot': True, 'file': str(model_file),
-                     'position': [0, 0, 0.42], 'rotation': [1, 0, 0, 0]})
-    return {'sim_options': spec['sim_options'], 'entities': entities, 'sensors': [],
-            'terrain_patches': patches, 'height_maps': maps}
+    robot_entity = {'id': robot['entity_id'], 'type': 'mjcf', 'robot': True, 'file': str(model_file),
+                    'position': [0, 0, 0.42], 'rotation': [1, 0, 0, 0]}
+    scene = {'sim_options': spec['sim_options'], 'entities': [ground, *geometry, robot_entity], 'sensors': [],
+             'terrain_patches': patches, 'height_maps': height_maps}
+    if 'terrain_curriculum' in spec:
+        scene['terrain_curriculum'] = deepcopy(spec['terrain_curriculum'])
+    return scene

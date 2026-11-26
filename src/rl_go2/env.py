@@ -13,6 +13,7 @@ from rl_go2.state import RobotState
 from rl_go2.step_delay import StepDelayState, action_delay_from_config
 from rl_go2.tasks import get_task_type
 from rl_go2.tasks.walk_rewards import WalkRewards
+from rl_go2.terrain_curriculum import TerrainCurriculum
 from rl_go2.terrain_features import TerrainHeightScan
 
 
@@ -75,12 +76,18 @@ class QuadrupedEnv:
             self.terrain_scan = TerrainHeightScan(scene).to(self.device)
         self.terrain_patches = patches
         self._fixed_terrain_index: int | None = None
+        self.terrain_curriculum: TerrainCurriculum | None = None
         if patches:
             self.terrain_generator = torch.Generator().manual_seed(config['seed'] ^ 0x53504157)
             self.terrain_weights = torch.tensor([patch['weight'] for patch in patches])
             self.terrain_positions = torch.tensor([patch['position'] for patch in patches], device=self.device)
             self.terrain_rotations = torch.tensor([patch['rotation'] for patch in patches], device=self.device)
             self.terrain_ids = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+            if 'terrain_curriculum' in scene:
+                self.terrain_curriculum = TerrainCurriculum(
+                    patches, scene['terrain_curriculum'], self.num_envs, self.device,
+                    self.terrain_generator, self.dt, self.max_episode_length,
+                )
         self.foot_friction = None
         self.friction_bounds = None
         self.friction_switch_steps = None
@@ -194,16 +201,22 @@ class QuadrupedEnv:
         updates = self.curriculum.on_reset(env_ids, environment_steps=self.environment_steps, metrics=metrics or {})
         self.backend.reset(env_ids)
         if self.terrain_patches and len(env_ids):
-            if self._fixed_terrain_index is None:
+            if self._fixed_terrain_index is not None:
+                selected = torch.full_like(env_ids, self._fixed_terrain_index)
+            elif self.terrain_curriculum is not None:
+                selected = self.terrain_curriculum.sample_patches(env_ids)
+            else:
                 selected = torch.multinomial(self.terrain_weights, len(env_ids), replacement=True,
                                              generator=self.terrain_generator).to(self.device)
-            else:
-                selected = torch.full_like(env_ids, self._fixed_terrain_index)
             self.terrain_ids[env_ids] = selected
             self.backend.set_base_pose(env_ids, self.terrain_positions[selected], self.terrain_rotations[selected])
         if self.friction_switch_steps is not None:
             self.reset_friction_segment(env_ids)
         self.state = self.backend.read_state()
+        if self.terrain_curriculum is not None and self._fixed_terrain_index is None:
+            self.terrain_curriculum.start_episodes(
+                env_ids, self.terrain_ids[env_ids], self.state.position, self.state.quaternion,
+            )
         self.task.reset(env_ids, self.state, updates)
         self.episode_length_buf[env_ids] = 0
         self.episode_return[env_ids] = 0
@@ -324,6 +337,10 @@ class QuadrupedEnv:
                                                     episode_step=self.episode_length_buf, commands=commands)
         truncated = (self.episode_length_buf >= self.max_episode_length) & ~terminated
         done = terminated | truncated
+        terrain_curriculum = self.terrain_curriculum if self._fixed_terrain_index is None else None
+        if terrain_curriculum is not None:
+            commands = context["commands"] if context is not None else self.task.context()["commands"]
+            terrain_curriculum.step(self.state.position, commands, terminated, self.episode_length_buf)
         self.episode_return += reward
         old_action = self.previous_action.clone() if self.record_transitions else None
         # Keep a normal persistent buffer so reset also works outside inference_mode.
@@ -354,6 +371,8 @@ class QuadrupedEnv:
                 "/episode/return": self.episode_return[done_ids].mean().item(),
                 "/episode/seconds": (self.episode_length_buf[done_ids].float().mean() * self.dt).item(),
             }
+            if terrain_curriculum is not None:
+                extras["terrain_curriculum"] = terrain_curriculum.finish_episodes(done_ids, terminated)
             self.reset(done_ids, extras["log"])
             curriculum_state = self.curriculum.state_dict()
             if "stage" in curriculum_state:

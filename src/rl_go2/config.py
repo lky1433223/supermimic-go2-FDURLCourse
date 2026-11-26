@@ -126,11 +126,14 @@ def load_scene(
 
 def validate_scene(scene: dict, path: Path, *, entity_overrides=None) -> dict:
     """Validate resolved or authored scene geometry and resolve asset paths."""
-    unknown = scene.keys() - {"sim_options", "entities", "sensors", "terrain_patches", "height_maps"}
+    fields = {"sim_options", "entities", "sensors", "terrain_patches", "height_maps", "terrain_curriculum"}
+    unknown = scene.keys() - fields
     if unknown:
         raise ValueError(f"Unsupported scene fields: {sorted(unknown)}")
     if scene.get("sensors"):
         raise NotImplementedError("Sensor loading is reserved for future tasks")
+    if 'terrain_curriculum' in scene:
+        _validate_terrain_curriculum(scene)
     sim = scene["sim_options"]
     if sim.keys() - {"dt", "gravity"} or not math.isfinite(sim["dt"]) or sim["dt"] <= 0:
         raise ValueError("sim_options supports positive dt and gravity only")
@@ -175,6 +178,25 @@ def validate_scene(scene: dict, path: Path, *, entity_overrides=None) -> dict:
         if "file" in entity:
             entity["file"] = str((path.parent / entity["file"]).resolve())
     return scene
+
+
+def _validate_terrain_curriculum(scene: dict) -> None:
+    settings = scene['terrain_curriculum']
+    fields = {'initial_max_level', 'pass_streak', 'fail_streak', 'hold_seconds', 'top_review_probability'}
+    if not isinstance(settings, dict) or set(settings) - {'spawn_half_width_m'} != fields:
+        raise ValueError('Terrain curriculum requires initial level, outcome streaks, hold time, and review probability')
+    if not scene.get('terrain_patches'):
+        raise ValueError('Terrain curriculum requires graded terrain patches')
+    initial = settings['initial_max_level']
+    if type(initial) is not int or not 0 <= initial <= 9:
+        raise ValueError('Terrain curriculum initial_max_level must be an integer in [0, 9]')
+    if any(type(settings[key]) is not int or settings[key] < 1 for key in ('pass_streak', 'fail_streak')):
+        raise ValueError('Terrain curriculum streaks must be positive integers')
+    hold, review = settings['hold_seconds'], settings['top_review_probability']
+    if type(hold) not in (int, float) or not math.isfinite(hold) or hold <= 0:
+        raise ValueError('Terrain curriculum hold_seconds must be finite and positive')
+    if type(review) not in (int, float) or not 0 <= review <= 1:
+        raise ValueError('Terrain curriculum top_review_probability must be in [0, 1]')
 
 
 def validate_scene_robot(scene: dict, robot: dict) -> None:
@@ -335,9 +357,11 @@ def _load_courses(config: dict, path: Path, robot_path: Path) -> None:
             raise ValueError('Each course needs a config path and a positive integer iteration budget')
         course_path = path.parent / entry['config']
         course = read_yaml(course_path)
-        unknown = course.keys() - task_fields - {'domain_randomization', 'terrains'}
+        unknown = course.keys() - task_fields - {'domain_randomization', 'terrains', 'terrain_curriculum'}
         if not course or unknown:
             raise ValueError(f'Invalid course settings in {course_path}: {sorted(unknown)}')
+        if 'terrain_curriculum' in course and 'terrains' not in course:
+            raise ValueError(f'Terrain curriculum requires terrains in {course_path}')
         task = {**task, **{key: course[key] for key in task_fields & course.keys()}}
         changes = course.get('domain_randomization', {})
         if not isinstance(changes, dict) or changes.keys() - {
@@ -348,6 +372,8 @@ def _load_courses(config: dict, path: Path, robot_path: Path) -> None:
         domain = {**domain, **changes}
         if 'terrains' in course:
             spec = {'sim_options': scene['sim_options'], 'terrains': course['terrains']}
+            if 'terrain_curriculum' in course:
+                spec['terrain_curriculum'] = course['terrain_curriculum']
             scene = build_training_scene(spec, config['robot'], robot_path, config['seed'])
             scene = validate_scene(scene, path)
             validate_scene_robot(scene, config['robot'])
