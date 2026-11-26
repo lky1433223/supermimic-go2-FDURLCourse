@@ -23,6 +23,7 @@ def main():
     parser.add_argument("--device", choices=["cpu", "cuda", "mps"])
     parser.add_argument("--num-envs", type=int)
     parser.add_argument("--iterations", type=int)
+    parser.add_argument("--course", help="Train only this named course with its inherited settings")
     parser.add_argument("--gpu-reserve-gib", type=float,
                         help="Override startup GPU reservation for Genesis/CUDA SuperMimic (0 disables it)")
     parser.add_argument("--output", type=Path, help="Run root; model artifacts are written under training/")
@@ -43,7 +44,15 @@ def main():
         ):
             parser.error("--gpu-reserve-gib requires Genesis/CUDA SuperMimic")
         config["startup_gpu_reserve_gib"] = args.gpu_reserve_gib
-    if args.iterations is not None:
+    if args.course is not None:
+        course = next((stage for stage in config.get("courses", []) if stage["name"] == args.course), None)
+        if course is None:
+            parser.error(f"Unknown course: {args.course}")
+        iterations = course["iterations"] if args.iterations is None else args.iterations
+        config.update(course["settings"])
+        config["courses"] = [{**course, "iterations": iterations, "end_iteration": iterations}]
+        trainer["iterations"] = iterations
+    elif args.iterations is not None:
         if config.get("courses") and args.iterations > trainer["iterations"]:
             parser.error("--iterations cannot exceed the configured course budget")
         trainer["iterations"] = args.iterations
