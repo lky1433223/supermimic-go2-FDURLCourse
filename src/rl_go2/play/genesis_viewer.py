@@ -31,8 +31,8 @@ class PlaybackPlugin(ViewerPlugin):
         self.dividers: list[pyglet.shapes.Rectangle] = []
         self.labels: list[pyglet.text.Label] = []
         self.held: set[int] = set()
-        self.mapping = {key.W: 'w', key.A: 'a', key.S: 's', key.D: 'd',
-                        key.UP: 'up', key.DOWN: 'down', key.LEFT: 'left', key.RIGHT: 'right',
+        self.mapping = {key.W: 'w', key.S: 's', key.A: 'a', key.D: 'd', key.Q: 'q', key.E: 'e',
+                        key.UP: 'up', key.DOWN: 'down',
                         key.SPACE: 'stop', key.P: 'pause', key.R: 'reset', key.ESCAPE: 'quit', key.F1: 'details',
                         key.N: 'next_terrain'}
 

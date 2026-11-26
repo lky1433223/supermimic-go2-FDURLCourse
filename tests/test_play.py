@@ -14,7 +14,7 @@ from rl_go2.play.runner import load_inputs
 
 class PlayTests(unittest.TestCase):
     def test_next_terrain_key_is_consumed_once(self):
-        controls = Controls(0.8, 0.5)
+        controls = Controls((0.8, 0.7, 1.0))
         controls.key_event('next_terrain', True)
         self.assertTrue(controls.consume_terrain_switch())
         controls.key_event('next_terrain', True, repeat=True)
@@ -44,7 +44,7 @@ class PlayTests(unittest.TestCase):
                                  ['flat', 'step', 'stairs', 'ramp', 'rough_ground'])
                 env = QuadrupedEnv(config)
                 viewer = Mock()
-                controls = Controls(0.8, 0.5)
+                controls = Controls((0.8, 0.7, 1.0))
                 try:
                     for cursor, index in enumerate(order[:5]):
                         select_playback_terrain(env, viewer, controls, order, cursor)
@@ -58,29 +58,49 @@ class PlayTests(unittest.TestCase):
                     env.close()
 
     def test_combination_release_and_speed_bounds(self):
-        controls = Controls(0.8, 0.5)
+        controls = Controls((0.8, 0.7, 1.0))
+        controls.key_event('up', True)
         controls.key_event('w', True)
         controls.key_event('a', True)
-        self.assertEqual(controls.sample()[0], [0.5, 0.0, 0.5])
+        controls.key_event('q', True)
+        controls.key_event('down', True)
+        self.assertEqual(controls.sample()[0], [0.5, 0.5, 0.5])
         controls.clear_keys()
         controls.key_event('s', True)
         controls.key_event('d', True)
-        self.assertEqual(controls.sample()[0], [-0.5, 0.0, -0.5])
+        controls.key_event('e', True)
+        self.assertEqual(controls.sample()[0], [-0.5, -0.5, -0.5])
+        controls.clear_keys()
+        controls.key_event('w', True)
         for _ in range(20):
             controls.key_event('up', True)
-            controls.key_event('right', True)
-        self.assertEqual((controls.speed, controls.yaw), (0.8, 0.5))
+        self.assertEqual(controls.sample()[0], [0.8, 0.0, 0.0])
+        controls.key_event('s', True)
+        self.assertEqual(controls.sample()[0], [0.0, 0.0, 0.0])
+        controls.key_event('w', False)
+        self.assertEqual(controls.sample()[0], [-0.5, 0.0, 0.0])
         for _ in range(20):
             controls.key_event('down', True)
-            controls.key_event('left', True)
-        self.assertEqual((controls.speed, controls.yaw), (0.0, 0.0))
+        self.assertEqual(controls.sample()[0], [0.0, 0.0, 0.0])
+
+    def test_up_adjusts_only_the_held_motion_key(self):
+        for key in 'wsadqe':
+            with self.subTest(key=key):
+                controls = Controls((0.8, 0.7, 1.0))
+                controls.key_event(key, True)
+                controls.key_event('up', True)
+                controls.key_event('up', True, repeat=True)
+                controls.key_event(key, False)
+                expected = dict.fromkeys('wsadqe', 0.5)
+                expected[key] = 0.6
+                self.assertEqual(controls.status()['speeds'], expected)
 
     def test_release_focus_and_discrete_repeat(self):
-        controls = Controls(0.8, 0.5)
+        controls = Controls((0.8, 0.7, 1.0))
         controls.key_event('w', True)
         controls.key_event('a', True)
         controls.key_event('w', False)
-        self.assertEqual(controls.sample()[0], [0.0, 0.0, 0.5])
+        self.assertEqual(controls.sample()[0], [0.0, 0.5, 0.0])
         controls.clear_keys()
         self.assertEqual(controls.sample()[0], [0.0, 0.0, 0.0])
         controls.key_event('pause', True)
@@ -100,7 +120,7 @@ class PlayTests(unittest.TestCase):
         from pyglet.window import key
         from rl_go2.play.genesis_viewer import PlaybackPlugin
 
-        controls = Controls(0.8, 0.5)
+        controls = Controls((0.8, 0.7, 1.0))
         plugin = PlaybackPlugin(controls)
         self.assertTrue(plugin.on_key_press(key.W, 0))
         self.assertEqual(controls.sample()[0][0], 0.5)
@@ -118,12 +138,17 @@ class PlayTests(unittest.TestCase):
         from types import SimpleNamespace
         from rl_go2.play.mujoco_viewer import MujocoPlayViewer
 
-        controls = Controls(0.8, 0.5)
+        controls = Controls((0.8, 0.7, 1.0))
         adapter = SimpleNamespace(controls=controls, release_forces=lambda: None)
         MujocoPlayViewer._on_key(adapter, None, glfw.KEY_W, 0, glfw.PRESS, 0)
         self.assertEqual(controls.sample()[0][0], 0.5)
         MujocoPlayViewer._on_key(adapter, None, glfw.KEY_W, 0, glfw.RELEASE, 0)
         self.assertEqual(controls.sample()[0][0], 0.0)
+        for key, expected in ((glfw.KEY_A, [0.0, 0.6, 0.0]), (glfw.KEY_E, [0.0, 0.0, -0.6])):
+            MujocoPlayViewer._on_key(adapter, None, key, 0, glfw.PRESS, 0)
+            MujocoPlayViewer._on_key(adapter, None, glfw.KEY_UP, 0, glfw.PRESS, 0)
+            self.assertEqual(controls.sample()[0], expected)
+            MujocoPlayViewer._on_key(adapter, None, key, 0, glfw.RELEASE, 0)
         MujocoPlayViewer._on_key(adapter, None, glfw.KEY_P, 0, glfw.PRESS, 0)
         MujocoPlayViewer._on_key(adapter, None, glfw.KEY_P, 0, glfw.REPEAT, 0)
         self.assertTrue(controls.sample()[1])
@@ -176,7 +201,7 @@ class PlayTests(unittest.TestCase):
             perturb.active = mujoco.mjtPertBit.mjPERT_TRANSLATE
             mujoco.mjv_movePerturb(backend.model, backend.data, mujoco.mjtMouse.mjMOUSE_MOVE_V,
                                   0.1, 0.0, scene, perturb)
-            adapter = SimpleNamespace(perturb=perturb, controls=Controls(0.8, 0.5))
+            adapter = SimpleNamespace(perturb=perturb, controls=Controls((0.8, 0.7, 1.0)))
             backend.set_interactive_force_callback(
                 lambda model, data: MujocoPlayViewer.apply_forces(adapter, model, data))
             for _ in range(3):
@@ -206,7 +231,7 @@ class PlayTests(unittest.TestCase):
             '<geom type="box" size=".1 .1 .1"/></body></worldbody></mujoco>')
         data = mujoco.MjData(model)
         mujoco.mj_forward(model, data)
-        controls = Controls(0.8, 0.5)
+        controls = Controls((0.8, 0.7, 1.0))
         adapter = SimpleNamespace(model=model, data=data, controls=controls,
                                   perturb=mujoco.MjvPerturb(), options=mujoco.MjvOption(),
                                   scene=mujoco.MjvScene(model, maxgeom=100))
@@ -241,13 +266,15 @@ class PlayTests(unittest.TestCase):
     def test_hud_exposes_speed_command_and_pause(self):
         from rl_go2.play.hud import layout_hud
 
-        controls = Controls(0.8, 0.5)
+        controls = Controls((0.8, 0.7, 1.0))
         controls.publish(backend='mujoco', policy='path/to/policy.pt',
-                         command=[0.4, -0.2], actual=[0.3, -0.1], seconds=2.0)
+                         command=[0.4, -0.2, 0.1], actual=[0.3, -0.1, 0.05], seconds=2.0)
         compact = layout_hud(controls.status())
         values = [label.value for label in compact.labels]
         self.assertIn('+0.40', values)
         self.assertIn('+0.30', values)
+        self.assertIn('Lateral (m/s)', values)
+        self.assertIn('-0.20', values)
         self.assertIn('No grab', values)
         self.assertNotIn('path/to/policy.pt', values)
 

@@ -35,8 +35,9 @@ class Panel:
 
 def layout_hud(status: dict) -> Panel:
     """Arrange live telemetry first and append configuration when F1 is open."""
-    forward, turn = status.get('command', (0.0, 0.0))
-    actual_forward, actual_turn = status.get('actual', (0.0, 0.0))
+    forward, lateral, turn = status.get('command', (0.0, 0.0, 0.0))
+    actual_forward, actual_lateral, actual_turn = status.get('actual', (0.0, 0.0, 0.0))
+    speeds = status['speeds']
     paused = status['paused']
     backend = status.get('backend')
     labels = [
@@ -51,33 +52,38 @@ def layout_hud(status: dict) -> Panel:
         Text(16, 109, 'Forward (m/s)'),
         Text(166, 109, f'{forward:+.2f}', large=True),
         Text(268, 109, f'{actual_forward:+.2f}', CYAN, large=True),
-        Text(16, 136, 'Turn (rad/s)'),
-        Text(166, 136, f'{turn:+.2f}', large=True),
-        Text(268, 136, f'{actual_turn:+.2f}', CYAN, large=True),
-        Text(16, 159, f"Speed {status['speed']:.2f} m/s  Up/Down", MUTED),
-        Text(208, 159, f"Turn {status['yaw']:.2f} rad/s  Left/Right", MUTED),
-        Text(16, 190, 'MOUSE FORCE', MUTED),
+        Text(16, 136, 'Lateral (m/s)'),
+        Text(166, 136, f'{lateral:+.2f}', large=True),
+        Text(268, 136, f'{actual_lateral:+.2f}', CYAN, large=True),
+        Text(16, 163, 'Turn (rad/s)'),
+        Text(166, 163, f'{turn:+.2f}', large=True),
+        Text(268, 163, f'{actual_turn:+.2f}', CYAN, large=True),
+        Text(16, 186, f"W/S {speeds['w']:.2f}/{speeds['s']:.2f}", MUTED),
+        Text(137, 186, f"A/D {speeds['a']:.2f}/{speeds['d']:.2f}", MUTED),
+        Text(258, 186, f"Q/E {speeds['q']:.2f}/{speeds['e']:.2f}", MUTED),
+        Text(16, 217, 'MOUSE FORCE', MUTED),
     ]
-    dividers = [60, 171]
-    bottom = 201
+    dividers = [60, 198]
+    bottom = 228
     body = status.get('mouse_body')
     if backend == 'mujoco' and body and body != 'none':
         labels.extend([
-            Text(16, 223, f"{status.get('mouse_force_n', 0.0):.1f} N", CYAN, large=True),
-            Text(166, 223, body),
+            Text(16, 250, f"{status.get('mouse_force_n', 0.0):.1f} N", CYAN, large=True),
+            Text(166, 250, body),
         ])
-        bottom = 234
+        bottom = 261
     else:
         message = 'No grab' if backend == 'mujoco' else 'Spring drag'
-        labels.append(Text(166, 190, message))
+        labels.append(Text(166, 217, message))
     dividers.append(bottom)
     details = status.get('details', False)
     labels.extend([
-        Text(16, bottom + 19, 'W/S  Move    A/D  Turn    Space  Stop', MUTED),
-        Text(16, bottom + 38, 'P  Pause    R  Reset    Esc  Exit', MUTED),
-        Text(294, bottom + 38, 'F1  Hide' if details else 'F1  Details', CYAN),
+        Text(16, bottom + 19, 'W/S  Forward/Back   A/D  Strafe   Q/E  Turn', MUTED),
+        Text(16, bottom + 38, 'Up/Down  Adjust with one movement key held', MUTED),
+        Text(16, bottom + 57, 'Space  Stop   P  Pause   R  Reset   Esc  Exit', MUTED),
+        Text(317, bottom + 57, 'F1  Hide' if details else 'F1  Details', CYAN),
     ])
-    bottom += 50
+    bottom += 69
     if details:
         dividers.append(bottom)
         iteration = status.get('iteration')

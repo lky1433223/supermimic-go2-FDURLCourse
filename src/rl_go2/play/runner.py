@@ -57,7 +57,7 @@ def select_playback_terrain(env: QuadrupedEnv, viewer: PlayViewer, controls: Con
     env.select_terrain(index)
     viewer.center_camera(tuple(patch['position']))
     controls.publish(terrain=patch['name'], terrain_progress=f'{cursor + 1}/{len(order)}',
-                     command=[0.0, 0.0], actual=[0.0, 0.0])
+                     command=[0.0, 0.0, 0.0], actual=[0.0, 0.0, 0.0])
 
 
 def run_loop(env: QuadrupedEnv, policy: torch.nn.Module, controls: Controls,
@@ -91,7 +91,7 @@ def run_loop(env: QuadrupedEnv, policy: torch.nn.Module, controls: Controls,
                 viewer.release_forces()
                 command.zero_()
                 env.task.commands.zero_()
-                controls.publish(command=[0.0, 0.0])
+                controls.publish(command=[0.0, 0.0, 0.0])
                 deadline = time.monotonic()
                 time.sleep(0.01)
                 continue
@@ -107,8 +107,8 @@ def run_loop(env: QuadrupedEnv, policy: torch.nn.Module, controls: Controls,
             count += 1
             linear = rotate_inverse(env.state.quaternion, env.state.linear_velocity)
             angular = rotate_inverse(env.state.quaternion, env.state.angular_velocity)
-            controls.publish(command=[float(command[0, 0]), float(command[0, 2])],
-                             actual=[float(linear[0, 0]), float(angular[0, 2])],
+            controls.publish(command=command[0].tolist(),
+                             actual=[float(linear[0, 0]), float(linear[0, 1]), float(angular[0, 2])],
                              seconds=count * env.dt)
             # Discard lag instead of accelerating to catch up after a slow frame.
             deadline = max(deadline + env.dt, time.monotonic())
@@ -136,8 +136,8 @@ def main(argv: list[str] | None = None) -> None:
     torch.manual_seed(args.seed)
     config, policy, path, iteration = load_inputs(args)
     ranges = config['task']['command_ranges']
-    controls = Controls(max_speed=max(abs(v) for v in ranges[0]),
-                        max_yaw=max(abs(v) for v in ranges[2]))
+    forward, lateral, yaw = (max(abs(value) for value in axis) for axis in ranges)
+    controls = Controls((forward, lateral, yaw))
     controls.publish(backend=args.backend, policy=str(path), iteration=iteration,
                      training_ranges=ranges,
                      physics=f'Nominal mass and CoM / foot friction {NOMINAL_SLIDING[0]:.1f}')
@@ -146,7 +146,7 @@ def main(argv: list[str] | None = None) -> None:
     try:
         policy = policy.to(env.device)
         viewer = create_viewer(env, controls, args.backend)
-        print('Focus the simulation window for WASD and the in-window HUD.', flush=True)
+        print('Focus the simulation window to use W/S, A/D, Q/E and the in-window HUD.', flush=True)
         run_loop(env, policy, controls, viewer, args.steps)
     except KeyboardInterrupt:
         pass

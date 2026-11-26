@@ -77,9 +77,9 @@ class MujocoPlayViewer:
             self.options.geomgroup[COLLISION_GEOM_GROUP] = show_collision
             self.options.geomgroup[VISUAL_GEOM_GROUP] = not show_collision
             return
-        mapping = {glfw.KEY_W: 'w', glfw.KEY_A: 'a', glfw.KEY_S: 's', glfw.KEY_D: 'd',
-                   glfw.KEY_UP: 'up', glfw.KEY_DOWN: 'down', glfw.KEY_LEFT: 'left',
-                   glfw.KEY_RIGHT: 'right', glfw.KEY_SPACE: 'stop', glfw.KEY_P: 'pause',
+        mapping = {glfw.KEY_W: 'w', glfw.KEY_S: 's', glfw.KEY_A: 'a', glfw.KEY_D: 'd',
+                   glfw.KEY_Q: 'q', glfw.KEY_E: 'e', glfw.KEY_UP: 'up', glfw.KEY_DOWN: 'down',
+                   glfw.KEY_SPACE: 'stop', glfw.KEY_P: 'pause',
                    glfw.KEY_R: 'reset', glfw.KEY_ESCAPE: 'quit', glfw.KEY_F1: 'details',
                    glfw.KEY_N: 'next_terrain'}
         if key in mapping:
