@@ -268,6 +268,10 @@ class DynamicsModel(nn.Module):
         return loss
 
 
+class ReplayUnavailable(ValueError):
+    """No eligible data are currently available for the requested sampling mode."""
+
+
 class ReplayBuffer:
     def __init__(self, length, num_envs, device):
         self.length, self.num_envs, self.device = length, num_envs, device
@@ -288,36 +292,68 @@ class ReplayBuffer:
     def _slots(self, logical):
         return (self.ptr - self.size + logical) % self.length
 
-    def sample_starts(self, batch):
+    def _sample_transitions(self, batch: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """Draw one valid frame per sample, replacing only draws flagged invalid."""
         t = self._slots(torch.randint(self.size, (batch,), device=self.device))
         env = torch.randint(self.num_envs, (batch,), device=self.device)
-        return {k: v[t, env] for k, v in self.data.items()}
+        invalid = self.data.get('invalid')
+        if invalid is None:
+            return t, env
+        replace = invalid[t, env].nonzero(as_tuple=True)[0]
+        if not replace.numel():
+            return t, env
+        slots = self._slots(torch.arange(self.size, device=self.device))
+        valid = (~invalid[slots]).flatten().float()
+        if not valid.any():
+            raise ReplayUnavailable('No valid replay transitions')
+        draws = torch.multinomial(valid, replace.numel(), replacement=True)
+        t[replace] = slots[draws // self.num_envs]
+        env[replace] = draws % self.num_envs
+        return t, env
+
+    def sample_starts(self, batch):
+        t, env = self._sample_transitions(batch)
+        return {k: v[t, env] for k, v in self.data.items() if k != 'invalid'}
 
     def sample_contacts(self, batch: int) -> dict[str, torch.Tensor]:
         """Draw single transitions, including failures excluded by complete dynamics windows."""
-        slots = self._slots(torch.randint(self.size, (batch,), device=self.device))
-        env_ids = torch.randint(self.num_envs, (batch,), device=self.device)
+        slots, env_ids = self._sample_transitions(batch)
         keys = ['state', 'action', 'features', 'contact_labels']
         if 'link_wrenches_world' in self.data:
             keys.append('link_wrenches_world')
         return {f'contact/{key}': self.data[key][slots, env_ids] for key in keys}
 
+    @staticmethod
+    def _valid_window_starts(blocked: torch.Tensor, transitions: int) -> torch.Tensor:
+        """Return the starts of contiguous windows with no blocked transitions."""
+        if transitions == 0:
+            return blocked.new_ones((blocked.shape[1], blocked.shape[0] + 1))
+        counts = torch.cat((blocked.new_zeros((1, blocked.shape[1])), blocked.cumsum(0)))
+        return (counts[transitions:] == counts[:-transitions]).T
+
+    def _sample_window_starts(self, starts: torch.Tensor, batch: int) -> tuple[torch.Tensor, torch.Tensor]:
+        cumulative = starts.cumsum(1)
+        totals = cumulative[:, -1]
+        if not (totals > 0).any():
+            raise ReplayUnavailable('No eligible replay windows')
+        env = torch.multinomial((totals > 0).float(), batch, replacement=True)
+        choice = (torch.rand(batch, device=self.device) * totals[env]).long()
+        start = torch.searchsorted(cumulative[env], choice[:, None], right=True)
+        return start, env
+
     def sample_windows(self, batch, steps, *, complete_frames=False):
         if self.size < steps:
             raise ValueError('Not enough replay steps')
+        invalid = self.data.get('invalid')
         if complete_frames:
             slots = self._slots(torch.arange(self.size, device=self.device))
             done = (self.data['terminated'] | self.data['truncated'])[slots]
-            counts = torch.cat((done.new_zeros((1, self.num_envs)), done.cumsum(0)))
             # A reset after the last frame does not break the window.
-            starts = (counts[steps - 1:self.size] == counts[:self.size - steps + 1]).T
-            cumulative = starts.cumsum(1)
-            totals = cumulative[:, -1]
-            if not (totals > 0).any():
-                raise ValueError(f'No complete replay windows of {steps} frames')
-            env = torch.multinomial((totals > 0).float(), batch, replacement=True)
-            choice = (torch.rand(batch, device=self.device) * totals[env]).long()
-            start = torch.searchsorted(cumulative[env], choice[:, None], right=True)
+            blocked = done[:-1]
+            if invalid is not None:
+                blocked = blocked | invalid[slots[:-1]]
+            starts = self._valid_window_starts(blocked, steps - 1)
+            start, env = self._sample_window_starts(starts, batch)
             t = self._slots(start + torch.arange(steps - 1, device=self.device))
             window = {key: self.data[key][t, env[:, None]]
                       for key in ('state', 'action', 'previous_action', 'torque', 'features')}
@@ -327,10 +363,16 @@ class ReplayBuffer:
             window['valid'] = torch.ones_like(t, dtype=torch.bool)
             return window
 
-        t = torch.randint(self.size - steps + 1, (batch, 1), device=self.device)
-        t = self._slots(t + torch.arange(steps, device=self.device))
-        env = torch.randint(self.num_envs, (batch, 1), device=self.device)
-        result = {k: v[t, env] for k, v in self.data.items()}
+        if invalid is None:
+            start = torch.randint(self.size - steps + 1, (batch, 1), device=self.device)
+            env = torch.randint(self.num_envs, (batch,), device=self.device)
+        else:
+            slots = self._slots(torch.arange(self.size, device=self.device))
+            starts = self._valid_window_starts(invalid[slots], steps)
+            start, env = self._sample_window_starts(starts, batch)
+        t = self._slots(start + torch.arange(steps, device=self.device))
+        env = env[:, None]
+        result = {k: v[t, env] for k, v in self.data.items() if k != 'invalid'}
         # The final transition itself is valid. Only following transitions cross reset.
         done = (result['terminated'] | result['truncated']).float()
         result['valid'] = torch.cat((torch.ones_like(done[:, :1]), (1 - done[:, :-1]).cumprod(1)), 1)

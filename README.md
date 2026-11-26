@@ -556,6 +556,11 @@ Actor、Critic、奖励和终止仍使用原有定义。机器人控制配置一
 连续两次通过或有效失败升降一级。9 级每次通过有 10% 概率从同类的 1–8 级均匀抽一级。
 训练指标按重置批次记录 `terrain/mean_level`、`terrain/level_9_fraction`、`terrain/passed`、`terrain/failed` 和 `terrain/skipped`。
 
+`trainer.simulation_state_limits` 可配置真实仿真的相对地面高度、三维线速度和竖直速度上限。
+分级地形实验使用 1.5 m、8 m/s 和 5 m/s。超限、非有限状态或退化四元数会单独触发重置，
+对应转移不参与 replay 采样、世界模型或 critic 的归一化统计，也不计入地形升降级。
+训练指标记录 `simulation/invalid_resets` 和各原因的次数。
+
 若引入执行延迟，需把真正的执行器状态加入动力学状态，不能用无约束 previous_action 快捷输入代替。
 
 输出目录必须不存在，保存完整配置、策略约定、资产哈希、逐轮 `metrics.jsonl` 和网络/优化器 checkpoint。

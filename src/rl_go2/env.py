@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 
 import torch
@@ -9,6 +9,7 @@ from rl_go2.control import JointPositionControl
 from rl_go2.curriculum import make_curriculum
 from rl_go2.observation_noise import NoiseHistory, ObservationNoise
 from rl_go2.observations import SensorReadings
+from rl_go2.simulation_limits import SimulationStateLimits, invalid_numeric_state
 from rl_go2.state import RobotState
 from rl_go2.step_delay import StepDelayState, action_delay_from_config
 from rl_go2.tasks import get_task_type
@@ -37,8 +38,10 @@ class Transition:
 
 
 class QuadrupedEnv:
-    def __init__(self, config, *, viewer=False, record_transitions=False, backend=None):
+    def __init__(self, config, *, viewer=False, record_transitions=False, backend=None,
+                 simulation_state_limits: SimulationStateLimits | None = None):
         self.config = config
+        self.simulation_state_limits = simulation_state_limits
         task_type = get_task_type(config["task"]["name"])
         task_type.validate_config(config["task"], config["robot"])
         self.action_delay = action_delay_from_config(config)
@@ -216,11 +219,36 @@ class QuadrupedEnv:
         """Return terrain-relative walking height, or use the task's default world Z."""
         if self.walk_rewards is None:
             return None
+        if self.terrain_scan is not None or self.ground_height_m:
+            return self._terrain_clearance_m(state)
+        return None
+
+    def _terrain_clearance_m(self, state: RobotState) -> torch.Tensor:
         if self.terrain_scan is not None:
             return self.terrain_scan.base_clearance_m(state.position, state.quaternion)
-        if self.ground_height_m:
-            return state.position[:, 2] - self.ground_height_m
-        return None
+        return state.position[:, 2] - self.ground_height_m
+
+    def _check_transition_state(
+        self, previous: RobotState,
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None, dict[str, torch.Tensor]]:
+        """Detect invalid successor states and use the prior state for safe bookkeeping."""
+        limits = self.simulation_state_limits
+        if limits is None:
+            return self.walking_height_m(self.state), None, {}
+        invalid_numeric = invalid_numeric_state(self.state)
+        readable = replace(
+            self.state,
+            position=torch.where(invalid_numeric[:, None], previous.position, self.state.position),
+            quaternion=torch.where(invalid_numeric[:, None], previous.quaternion, self.state.quaternion),
+        )
+        height = self.walking_height_m(readable)
+        clearance = self._terrain_clearance_m(readable) if height is None else height
+        reasons = limits.classify(readable, clearance, invalid_numeric)
+        invalid = torch.stack(tuple(reasons.values())).any(dim=0)
+        self.state = self.state.where(~invalid, previous)
+        if height is not None:
+            height = torch.where(invalid, 0.0, height)
+        return height, invalid, reasons
 
     def select_terrain(self, index: int) -> None:
         """Reset on the selected patch and keep subsequent resets on that patch."""
@@ -249,6 +277,14 @@ class QuadrupedEnv:
         if self.friction_switch_steps is not None:
             self.reset_friction_segment(env_ids)
         self.state = self.backend.read_state()
+        if self.simulation_state_limits is not None and env_ids.numel():
+            spawn = self.state.select(env_ids)
+            invalid_numeric = invalid_numeric_state(spawn)
+            if invalid_numeric.any():
+                raise RuntimeError("Simulator reset returned a nonfinite or degenerate state")
+            reasons = self.simulation_state_limits.classify(spawn, self._terrain_clearance_m(spawn), invalid_numeric)
+            if torch.stack(tuple(reasons.values())).any():
+                raise RuntimeError("Simulator reset returned a state outside simulation_state_limits")
         if self.terrain_curriculum is not None and self._fixed_terrain_index is None:
             self.terrain_curriculum.start_episodes(
                 env_ids, self.terrain_ids[env_ids], self.state.position, self.state.quaternion,
@@ -352,7 +388,7 @@ class QuadrupedEnv:
                 peak_contact_force = torch.maximum(peak_contact_force, contacts.prohibited_force_n)
         self.episode_length_buf += 1
         self.environment_steps += self.num_envs
-        height = self.walking_height_m(self.state)
+        height, invalid, anomaly_reasons = self._check_transition_state(old_state)
         height_arg = {} if height is None else {"base_height_m": height}
         reward = self.task.reward(self.state, issued_action, self.previous_action, torque, **height_arg)
         terminated = self.task.terminated(self.state, **height_arg)
@@ -372,7 +408,11 @@ class QuadrupedEnv:
                 reward = reward + walk.extra_reward(self.state.joint_position, terminated, foot_contact=feet,
                                                     episode_step=self.episode_length_buf, commands=commands)
         truncated = (self.episode_length_buf >= self.max_episode_length) & ~terminated
-        done = terminated | truncated
+        if invalid is not None:
+            terminated = terminated & ~invalid
+            truncated = truncated & ~invalid
+            reward = reward.masked_fill(invalid, 0)
+        done = terminated | truncated if invalid is None else terminated | truncated | invalid
         terrain_curriculum = self.terrain_curriculum if self._fixed_terrain_index is None else None
         if terrain_curriculum is not None:
             commands = context["commands"] if context is not None else self.task.context()["commands"]
@@ -386,6 +426,9 @@ class QuadrupedEnv:
             readings = SensorReadings.from_state(self.state)
             self._sensor_readings, self.noise_history = self.observation_noise.apply(readings, self.noise_history)
         extras = {"time_outs": truncated, "terminated": terminated, "truncated": truncated}
+        if invalid is not None:
+            extras["invalid_transition"] = invalid
+            extras["simulation_anomalies"] = anomaly_reasons
         if contact_failure is not None:
             extras["prohibited_contact"] = contact_failure
             extras["prohibited_contact_force_n"] = peak_contact_force
@@ -403,12 +446,15 @@ class QuadrupedEnv:
         if done_ids.numel():
             extras["final_env_ids"] = done_ids
             extras["final_observation"] = self.observe()[done_ids].clone()
-            extras["log"] = {
-                "/episode/return": self.episode_return[done_ids].mean().item(),
-                "/episode/seconds": (self.episode_length_buf[done_ids].float().mean() * self.dt).item(),
-            }
-            if terrain_curriculum is not None:
-                extras["terrain_curriculum"] = terrain_curriculum.finish_episodes(done_ids, terminated)
+            eligible = done_ids if invalid is None else done_ids[~invalid[done_ids]]
+            extras["log"] = {}
+            if eligible.numel():
+                extras["log"] = {
+                    "/episode/return": self.episode_return[eligible].mean().item(),
+                    "/episode/seconds": (self.episode_length_buf[eligible].float().mean() * self.dt).item(),
+                }
+                if terrain_curriculum is not None:
+                    extras["terrain_curriculum"] = terrain_curriculum.finish_episodes(eligible, terminated)
             self.reset(done_ids, extras["log"])
             curriculum_state = self.curriculum.state_dict()
             if "stage" in curriculum_state:

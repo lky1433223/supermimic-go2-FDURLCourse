@@ -21,8 +21,11 @@ from rl_go2.config import FOOT_NAMES, MODEL_PARAMETER_KEYS
 from rl_go2.env import QuadrupedEnv
 from rl_go2.observations import SensorReadings
 from rl_go2.point_push import Go2PushGeometry, PointPushConfig, PointPushScheduler, PushState
+from rl_go2.simulation_limits import SimulationStateLimits
 from rl_go2.step_delay import StepDelayState
-from rl_go2.trainers.model_learning import DynamicsModel, ReplayBuffer, RunningNorm, heading, local_state, mlp, pack, unpack
+from rl_go2.trainers.model_learning import (
+    DynamicsModel, ReplayBuffer, ReplayUnavailable, RunningNorm, heading, local_state, mlp, pack, unpack,
+)
 from rl_go2.trainers.numerical_diagnostics import NumericalDiagnostics, UpdateSnapshot
 
 OFFICIAL_REPLAY_RATIO = 16
@@ -71,12 +74,14 @@ class TrainConfig:
     condition_on_link_wrenches: bool = False
     init_checkpoint: str | None = None
     world_model_warmup_iterations: int = 0
+    simulation_state_limits: dict | None = None
 
     @property
     def uses_official_schedule(self):
         return self.warmup_iterations == 0
 
     def validate(self):
+        SimulationStateLimits.from_config(self.simulation_state_limits)
         if type(self.numerical_diagnostics) is not bool:
             raise ValueError('numerical_diagnostics must be a boolean')
         if not math.isfinite(self.diagnostic_model_loss_threshold) or self.diagnostic_model_loss_threshold <= 0:
@@ -461,6 +466,17 @@ class Trainer:
             raise ValueError('World model point loads must target the base or one of the four calf links')
         return self.env.step(action, link_point_forces=loads)
 
+    def _record_transition(self, record: dict[str, torch.Tensor], valid: torch.Tensor | None) -> None:
+        """Store the frame and compute statistics from eligible transitions only."""
+        clean = record if valid is None else {name: value[valid] for name, value in record.items()}
+        if any(not torch.isfinite(value).all() for value in clean.values()):
+            raise RuntimeError('Non-finite simulation transition')
+        self.replay.add(record)
+        if clean['state'].shape[0]:
+            self.model.update_stats(clean)
+            self.critic.norm.update(critic_input(clean['state'], clean['previous_action'],
+                                                 context_from(clean), clean['features']))
+
     @torch.no_grad()
     def collect(
         self, *, point_force_plan: Sequence[LinkPointForces | None] | None = None,
@@ -478,6 +494,7 @@ class Trainer:
         push_counts = []
         task_metrics = {}
         terrain_metrics = {}
+        anomaly_counts: dict[str, int] = {}
         for index in range(self.cfg.collect_steps):
             obs = self.env.observe()
             sensor_record = {}
@@ -528,23 +545,37 @@ class Trainer:
             record.update({f'context/{key}': value for key, value in transition.context.items()})
             record.update(push_record)
             record.update(sensor_record)
-            if any(not torch.isfinite(x).all() for x in record.values()) or not torch.isfinite(reward).all():
-                raise RuntimeError('Non-finite simulation transition')
-            if callable(getattr(self.env.task, 'metrics', None)):
+            invalid = extras.get('invalid_transition')
+            valid = None
+            actor_rows = ~self.driver_mask
+            driver_rows = self.driver_mask
+            if invalid is not None:
+                record['invalid'] = invalid
+                reasons = {'invalid_resets': invalid, **extras['simulation_anomalies']}
+                counts = torch.stack(tuple(reasons.values())).sum(dim=1).tolist()
+                for name, count in zip(reasons, counts, strict=True):
+                    anomaly_counts[name] = anomaly_counts.get(name, 0) + count
+                if counts[0]:
+                    valid = ~invalid
+                    actor_rows = actor_rows & valid
+                    driver_rows = driver_rows & valid
+            self._record_transition(record, valid)
+            actor_rewards = reward[actor_rows]
+            if actor_rewards.numel() and callable(getattr(self.env.task, 'metrics', None)):
                 for name, value in self.env.task.metrics(transition.next_state, transition.context).items():
-                    task_metrics.setdefault(name, []).append(value[~self.driver_mask].mean())
-            self.replay.add(record)
-            self.model.update_stats(record)
-            self.critic.norm.update(critic_input(record['state'], record['previous_action'],
-                                                 transition.context, features))
-            rewards.append(reward[~self.driver_mask].mean())
+                    task_metrics.setdefault(name, []).append(value[actor_rows].mean())
+            if actor_rewards.numel():
+                rewards.append(actor_rewards.mean())
             dones.append(done[~self.driver_mask].float().mean())
             if self.driver is not None:
-                driver_rewards.append(reward[self.driver_mask].mean())
-        result = {'real_reward': torch.stack(rewards).mean().item(),
+                valid_driver_rewards = reward[driver_rows]
+                if valid_driver_rewards.numel():
+                    driver_rewards.append(valid_driver_rewards.mean())
+        result = {'real_reward': torch.stack(rewards).mean().item() if rewards else 0.0,
                   'reset_fraction': torch.stack(dones).mean().item()}
         result.update({f'real/{name}': torch.stack(values).mean().item() for name, values in task_metrics.items()})
         result.update({f'terrain/{name}': value for name, value in terrain_metrics.items()})
+        result.update({f'simulation/{name}': count for name, count in anomaly_counts.items()})
         if driver_rewards:
             result['driver_reward'] = torch.stack(driver_rewards).mean().item()
         if push_counts:
@@ -767,7 +798,8 @@ def _train_stage(config, cfg: TrainConfig, output: Path, log, first: int, last: 
     from rl_go2.trainers.supermimic_init import initialize_weights
 
     environment_steps, policy_updates = progress
-    env = QuadrupedEnv(config, record_transitions=True)
+    limits = SimulationStateLimits.from_config(cfg.simulation_state_limits)
+    env = QuadrupedEnv(config, record_transitions=True, simulation_state_limits=limits)
     with closing(env), cuda_matmul_tf32(cfg.tf32 and env.device.type == 'cuda'):
         env.environment_steps = environment_steps
         trainer = Trainer(env, cfg, diagnostics) if diagnostics is not None else Trainer(env, cfg)
@@ -799,7 +831,13 @@ def _train_stage(config, cfg: TrainConfig, output: Path, log, first: int, last: 
                     updates = 0
             for _ in range(updates):
                 model_start = perf_counter()
-                stats['model_loss'] = trainer.fit_model()
+                try:
+                    stats['model_loss'] = trainer.fit_model()
+                except ReplayUnavailable:
+                    if limits is None:
+                        raise
+                    # Wait for a new contiguous window after invalid simulator transitions.
+                    break
                 stats['model_seconds'] += perf_counter() - model_start
                 if model_only:
                     continue

@@ -31,6 +31,10 @@ courses:
     iterations: 100000
 trainer:
   name: supermimic
+  simulation_state_limits:
+    max_base_height_m: 1.5
+    max_linear_speed_mps: 8.0
+    max_vertical_speed_mps: 5.0
   collect_steps: 1
   buffer_steps: 1000
   warmup_iterations: 0

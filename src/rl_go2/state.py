@@ -17,6 +17,15 @@ class RobotState:
     def clone(self):
         return RobotState(**{f.name: getattr(self, f.name).detach().clone() for f in fields(self)})
 
+    def where(self, mask: torch.Tensor, fallback: "RobotState") -> "RobotState":
+        """Use this state on true environment rows and the fallback elsewhere."""
+        return RobotState(*(torch.where(mask[:, None], getattr(self, f.name), getattr(fallback, f.name))
+                            for f in fields(self)))
+
+    def select(self, indices: torch.Tensor) -> "RobotState":
+        """Select the supplied batch rows without changing state fields."""
+        return RobotState(*(getattr(self, f.name)[indices] for f in fields(self)))
+
 
 def quat_mul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     """Compose two rotation quaternions in wxyz order."""

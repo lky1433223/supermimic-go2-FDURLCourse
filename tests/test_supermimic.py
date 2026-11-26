@@ -17,6 +17,7 @@ from rl_go2.env import QuadrupedEnv
 from rl_go2.observation_noise import ObservationNoise
 from rl_go2.observations import SensorReadings
 from rl_go2.point_push import Go2PushGeometry, PointPushConfig, PointPushScheduler, PushState
+from rl_go2.simulation_limits import SimulationStateLimits
 from rl_go2.trainers.model_learning import DynamicsModel, ReplayBuffer, pack, unpack, quat_mul, conjugate
 from rl_go2.state import rotate_inverse
 from rl_go2.tasks.flat_walk import FlatWalkTask
@@ -330,6 +331,71 @@ class SuperMimicTests(unittest.TestCase):
         torch.testing.assert_close(window['state'][..., 0], torch.tensor([103., 104., 105.]).expand(8, -1))
         torch.testing.assert_close(window['next_state'], window['state'] + 1)
         self.assertTrue(window['valid'].all())
+
+    def test_invalid_simulation_frame_is_excluded_but_an_ordinary_fall_is_kept(self):
+        graded = load_experiment(ROOT / 'configs/experiments/curriculum_supermimic_rewards_graded.yaml')
+        self.config['scene'] = graded['courses'][-1]['settings']['scene']
+        limits = SimulationStateLimits.from_config(graded['trainer']['simulation_state_limits'])
+        self.cfg.collect_steps = 1
+        backend = FakeBackend(self.config)
+        env = QuadrupedEnv(self.config, backend=backend, record_transitions=True,
+                           simulation_state_limits=limits)
+        trainer = Trainer(env, self.cfg)
+        initial = env.state.position.clone()
+        original_step, original_read = backend.step, backend.read_state
+
+        def step(torque, *, base_force=None):
+            original_step(torque, base_force=base_force)
+            backend.position[:, 2] = torch.tensor([1.85, 0.01])
+
+        def read_state():
+            state = original_read()
+            if state.position[0, 2] > 1.5:
+                state.linear_velocity[0] = torch.tensor([-7.99, 6.56, 5.53])
+            return state
+
+        with patch.object(backend, 'step', step), patch.object(backend, 'read_state', read_state):
+            stats = trainer.collect()
+        self.assertEqual(stats['simulation/invalid_resets'], 1)
+        for reason in ('height', 'linear_speed', 'vertical_speed'):
+            self.assertEqual(stats[f'simulation/{reason}'], 1)
+        self.assertEqual(stats['terrain/skipped'], 1)
+        self.assertEqual(env.episode_length_buf.tolist(), [0, 0])
+        self.assertEqual(trainer.replay.data['invalid'][0].tolist(), [True, False])
+        self.assertEqual(trainer.replay.data['terminated'][0].tolist(), [False, True])
+        self.assertAlmostEqual(trainer.model.input_norm.count.item(), 1.0001, places=4)
+        self.assertAlmostEqual(trainer.critic.norm.count.item(), 1.0001, places=4)
+        torch.testing.assert_close(trainer.replay.sample_starts(32)['state'][:, :3],
+                                   initial[1].expand(32, -1))
+
+        def nonfinite_step(torque, *, base_force=None):
+            original_step(torque, base_force=base_force)
+            backend.position[0, 2] = float('nan')
+
+        with patch.object(backend, 'step', nonfinite_step):
+            stats = trainer.collect()
+        self.assertEqual(stats['simulation/nonfinite_or_degenerate'], 1)
+        self.assertEqual(stats['simulation/invalid_resets'], 1)
+        self.assertNotIn('terrain/skipped', stats)
+        self.assertEqual(env.episode_length_buf.tolist(), [0, 1])
+        self.assertTrue(env.state.position.isfinite().all())
+
+    def test_replay_windows_and_contacts_exclude_invalid_transitions(self):
+        replay = ReplayBuffer(4, 2, 'cpu')
+        for t in range(7):
+            state = torch.tensor([[float(t)], [float(t + 100)]])
+            record = dict.fromkeys(('state', 'action', 'previous_action', 'torque', 'features',
+                                    'next_state', 'contact_labels'), state)
+            record.update(terminated=torch.zeros(2, dtype=torch.bool),
+                          truncated=torch.zeros(2, dtype=torch.bool),
+                          invalid=torch.tensor([t == 4, False]))
+            replay.add(record)
+        for complete in (False, True):
+            window = replay.sample_windows(8, 4, complete_frames=complete)
+            steps = 3 if complete else 4
+            torch.testing.assert_close(window['state'][..., 0],
+                                       torch.arange(103., 103. + steps).expand(8, -1))
+        self.assertFalse((replay.sample_contacts(100)['contact/state'] == 4).any())
 
     def test_five_link_wrenches_reach_replay_model_and_imagination(self):
         self.config.update(backend='mujoco', device='cpu', num_envs=1)
