@@ -30,7 +30,7 @@ def wrench_indices(env: QuadrupedEnv, conditioned: bool) -> list[int]:
 
 
 @torch.no_grad()
-def collect(env: QuadrupedEnv, checkpoint: dict, args: argparse.Namespace) -> tuple[np.ndarray, np.ndarray]:
+def collect(env: QuadrupedEnv, checkpoint: dict, args: argparse.Namespace) -> tuple[np.ndarray, np.ndarray, str]:
     """Replay one continuous prediction window with Genesis actions and loads."""
     settings = checkpoint['trainer']
     actor = Actor(env.observe().shape[-1], env.num_actions, settings['actor_hidden'],
@@ -59,6 +59,7 @@ def collect(env: QuadrupedEnv, checkpoint: dict, args: argparse.Namespace) -> tu
     predicted = [state]
     points = state.new_zeros((1, len(env.backend.link_names), 3))
     forces = torch.zeros_like(points)
+    stop_reason = 'horizon_reached'
     for step in range(args.horizon):
         if command is not None:
             env.task.commands.copy_(command)
@@ -75,15 +76,18 @@ def collect(env: QuadrupedEnv, checkpoint: dict, args: argparse.Namespace) -> tu
             wrenches = points.new_zeros((1, len(indices), 6)) if recorded is None else recorded[:, indices]
         state, _, _ = model.predict_transition(state, transition.action, features, wrenches)
         if not torch.isfinite(state).all():
-            raise ValueError(f'World model produced a non-finite state at prediction step {step + 1}')
+            stop_reason = f'non_finite_prediction_at_step_{step + 1}'
+            break
         actual.append(pack(transition.next_state))
         predicted.append(state)
         if done.item():
+            stop_reason = 'reference_episode_ended'
             break
-    return torch.cat(actual).cpu().numpy(), torch.cat(predicted).cpu().numpy()
+    return torch.cat(actual).cpu().numpy(), torch.cat(predicted).cpu().numpy(), stop_reason
 
 
-def render(output: Path, config: dict, actual: np.ndarray, predicted: np.ndarray, dt: float) -> None:
+def render(output: Path, config: dict, actual: np.ndarray, predicted: np.ndarray, dt: float,
+           *, realtime: bool = False) -> None:
     """Place both poses in the same scene and render without advancing physics."""
     import cv2
     import imageio.v2 as imageio
@@ -103,7 +107,10 @@ def render(output: Path, config: dict, actual: np.ndarray, predicted: np.ndarray
     with mujoco.Renderer(model, height=480, width=640) as renderer, imageio.get_writer(
         str(output), fps=20, codec='libx264',
     ) as writer:
-        for step, (truth, estimate) in enumerate(zip(actual, predicted, strict=True)):
+        frame_count = max(1, math.ceil((len(actual) - 1) * dt * 20))
+        steps = (min(round(frame / (20 * dt)), len(actual) - 1) for frame in range(frame_count))
+        for step in steps if realtime else range(len(actual)):
+            truth, estimate = actual[step], predicted[step]
             images = []
             tracks = (('Genesis', truth, actual, (0.2, 0.8, 1.0, 1.0)),
                       ('World model', estimate, predicted, (1.0, 0.6, 0.2, 1.0)))
@@ -113,7 +120,9 @@ def render(output: Path, config: dict, actual: np.ndarray, predicted: np.ndarray
                 data.qpos[backend.q_indices] = state[13:25]
                 mujoco.mj_forward(model, data)
                 renderer.update_scene(data, camera=camera)
-                draw_track(mujoco, renderer.scene, track[:step + 1, :3], color)
+                # Bound trail geometry and rendering work for long predictions.
+                trail = track[:step + 1:max(1, math.ceil((step + 1) / 512)), :3]
+                draw_track(mujoco, renderer.scene, trail, color)
                 image = renderer.render().copy()
                 cv2.rectangle(image, (0, 0), (640, 35), (22, 22, 22), -1)
                 title = f'{label} | step {step}/{len(actual) - 1} | {1000 * dt * step:.0f} ms'
@@ -121,7 +130,7 @@ def render(output: Path, config: dict, actual: np.ndarray, predicted: np.ndarray
                             0.58, (245, 245, 245), 1, cv2.LINE_AA)
                 images.append(image)
             frame = np.concatenate(images, axis=1)
-            for _ in range(12 if step in (0, len(actual) - 1) else 1):
+            for _ in range(12 if not realtime and step in (0, len(actual) - 1) else 1):
                 writer.append_data(frame)
 
 
@@ -148,13 +157,18 @@ def main() -> None:
     parser.add_argument('--terrain', type=int, help='Index in the saved scene terrain_patches')
     parser.add_argument('--command', nargs=3, type=float, metavar=('VX', 'VY', 'YAW_RATE'))
     parser.add_argument('--start', type=int, default=50, help='Genesis warmup steps before the window')
-    parser.add_argument('--horizon', type=int, default=32)
+    duration = parser.add_mutually_exclusive_group()
+    duration.add_argument('--horizon', type=int, default=32)
+    duration.add_argument('--seconds', type=float,
+                          help='Continuous prediction duration in simulation seconds; render at real-time speed')
     parser.add_argument('--push-n', type=float, default=0., help='Optional lateral base push along world +Y')
     parser.add_argument('--push-at', type=int, default=0, help='Zero-based prediction step to start pushing')
     parser.add_argument('--push-steps', type=int, default=5)
     args = parser.parse_args()
     if args.start < 0 or args.horizon < 1 or args.iteration < 1:
         parser.error('Require a nonnegative start and positive horizon and iteration')
+    if args.seconds is not None and (not math.isfinite(args.seconds) or args.seconds <= 0):
+        parser.error('--seconds must be finite and positive')
     if not math.isfinite(args.push_n) or (args.command and not all(map(math.isfinite, args.command))):
         parser.error('Push and command must be finite')
     if args.push_n and not (0 <= args.push_at < args.horizon and args.push_steps > 0):
@@ -176,9 +190,15 @@ def main() -> None:
         parser.error(f'Expected a terrain index in [0, {len(patches)})')
 
     config.update(backend='genesis', device=args.device, num_envs=1, seed=args.seed)
+    if args.seconds is not None:
+        control_dt = config['scene']['sim_options']['dt'] * config['robot']['control_decimation']
+        args.horizon = math.ceil(args.seconds / control_dt)
+        config['task']['episode_seconds'] = max(
+            config['task']['episode_seconds'], (args.start + args.horizon + 1) * control_dt,
+        )
     torch.manual_seed(args.seed)
     with closing(QuadrupedEnv(config, record_transitions=True)) as env:
-        actual, predicted = collect(env, checkpoint, args)
+        actual, predicted, stop_reason = collect(env, checkpoint, args)
         dt = env.dt
 
     timestamp = datetime.now(ZoneInfo('Asia/Shanghai')).strftime('%Y%m%d-%H%M%S-%f')
@@ -190,10 +210,13 @@ def main() -> None:
     metadata = {**vars(args), 'run_dir': str(args.run_dir.resolve()), 'output': str(output.resolve()),
                 'checkpoint': str(weights.resolve()), 'control_dt_seconds': dt, 'machine': machine,
                 'reference_backend': 'genesis', 'render_backend': 'mujoco',
-                'recorded_steps': len(actual) - 1}
+                'recorded_steps': len(actual) - 1,
+                'recorded_seconds': (len(actual) - 1) * dt,
+                'stop_reason': stop_reason, 'prediction_state_resets': 0,
+                'reference_episode_seconds': config['task']['episode_seconds']}
     (output / 'eval-config.json').write_text(json.dumps(metadata, indent=2) + '\n')
     np.savez_compressed(output / 'trajectory.npz', genesis=actual, world_model=predicted)
-    render(output / 'replay.mp4', config, actual, predicted, dt)
+    render(output / 'replay.mp4', config, actual, predicted, dt, realtime=args.seconds is not None)
     print(output.resolve())
 
 

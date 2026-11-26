@@ -143,6 +143,12 @@ python scripts/evaluate.py --task point-push --run-dir <训练目录> \
 
 训练启动时会打印绝对输出路径。历史 `runs/` 及当前已有产物保持原位，仍被忽略，不自动迁移。
 
+SuperMimic 数值异常定位可在 `scripts/train.py` 增加 `--numerical-diagnostics`。
+该模式自动关闭 `torch.compile` 和 CUDA Graph，启用 autograd 异常追踪，速度会降低。
+异常的前向调用栈写入 `train.log`；失败轮次、逐参数梯度统计保存在
+`training/diagnostics/iteration-<轮次>/failure.json`，网络、梯度、最近采样批次和更新前
+PyTorch 随机数状态保存在同目录的 `failure.pt`。诊断快照用于排查，不作为续训 checkpoint。
+
 ## 环境与资产
 
 ```bash

@@ -29,6 +29,8 @@ def main():
     parser.add_argument("--output", type=Path, help="Run root; model artifacts are written under training/")
     parser.add_argument("--init-checkpoint", type=Path, help="Initialize training weights from a checkpoint")
     parser.add_argument("--driver-policy", type=Path, help="Optional TorchScript data driver for SuperMimic")
+    parser.add_argument("--numerical-diagnostics", action="store_true",
+                        help="Trace SuperMimic autograd failures; disable compile and CUDA Graph")
     args = parser.parse_args()
     config = load_experiment(args.config)
     for key in ("backend", "device", "num_envs"):
@@ -36,6 +38,10 @@ def main():
         if value is not None:
             config[key] = value
     trainer = config["trainer"]
+    if args.numerical_diagnostics:
+        if trainer["name"] != "supermimic":
+            parser.error("--numerical-diagnostics requires the SuperMimic trainer")
+        trainer.update(numerical_diagnostics=True, compile_training=False, cuda_graph=False)
     if args.gpu_reserve_gib is not None:
         if not math.isfinite(args.gpu_reserve_gib) or args.gpu_reserve_gib < 0:
             parser.error("--gpu-reserve-gib must be finite and nonnegative")
