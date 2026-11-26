@@ -94,17 +94,21 @@ def render(output: Path, config: dict, actual: np.ndarray, predicted: np.ndarray
     brighten_scene(model)
     model.vis.global_.offwidth = 640
     model.vis.global_.offheight = 480
+    # MuJoCo expresses clip distances in units of the whole scene's extent.
+    # The training map spans many distant patches, but this camera is 2 m away.
+    model.vis.map.znear = 0.025 / model.stat.extent
+    model.vis.map.zfar = 20.0 / model.stat.extent
     camera = mujoco.MjvCamera()
-    camera.azimuth, camera.elevation, camera.distance = 115, -18, 2.0
+    camera.azimuth, camera.elevation, camera.distance = 115, -14, 1.4
     with mujoco.Renderer(model, height=480, width=640) as renderer, imageio.get_writer(
         str(output), fps=20, codec='libx264',
     ) as writer:
         for step, (truth, estimate) in enumerate(zip(actual, predicted, strict=True)):
-            camera.lookat[:] = truth[:3]
             images = []
             tracks = (('Genesis', truth, actual, (0.2, 0.8, 1.0, 1.0)),
                       ('World model', estimate, predicted, (1.0, 0.6, 0.2, 1.0)))
             for label, state, track, color in tracks:
+                camera.lookat[:] = (*state[:2], 0.2)
                 data.qpos[:7] = state[:7]
                 data.qpos[backend.q_indices] = state[13:25]
                 mujoco.mj_forward(model, data)
