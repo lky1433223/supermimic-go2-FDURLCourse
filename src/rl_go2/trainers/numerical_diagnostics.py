@@ -1,8 +1,8 @@
-"""Capture eager autograd failures without allowing invalid optimizer updates."""
+"""Save the exact batches and parameters involved in abnormal SuperMimic updates."""
 
-from collections.abc import Iterator
-from contextlib import contextmanager
+from dataclasses import dataclass
 import json
+import math
 from pathlib import Path
 
 import torch
@@ -10,14 +10,13 @@ from torch import nn
 
 
 def gradient_report(modules: dict[str, nn.Module]) -> dict:
-    """Summarize parameter gradients, using float64 for finite-gradient norms."""
+    """Summarize existing gradients on CPU, using float64 for finite values."""
     report = {}
     for module_name, module in modules.items():
         for name, parameter in module.named_parameters():
-            gradient = parameter.grad
-            if gradient is None:
+            if parameter.grad is None:
                 continue
-            values = gradient.detach()
+            values = parameter.grad.detach().cpu()
             finite = torch.isfinite(values)
             report[f"{module_name}.{name}"] = {
                 "nonfinite_count": int((~finite).sum().item()),
@@ -26,35 +25,94 @@ def gradient_report(modules: dict[str, nn.Module]) -> dict:
     return report
 
 
-@contextmanager
-def diagnose_update(
-    output: Path, iteration: int, modules: dict[str, nn.Module],
-    batches: dict[str, dict[str, torch.Tensor]],
-) -> Iterator[None]:
-    """Trace forward operations and preserve failed-update evidence before reraising."""
-    rng_cpu = torch.get_rng_state()
-    rng_cuda = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else []
-    try:
-        with torch.autograd.detect_anomaly(check_nan=True):
-            yield
-    except RuntimeError as error:
-        destination = output / "diagnostics" / f"iteration-{iteration}"
-        destination.mkdir(parents=True, exist_ok=False)
-        report = {"iteration": iteration, "error": str(error), "gradients": gradient_report(modules)}
-        (destination / "failure.json").write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
-        # A failure snapshot is evidence, not a resumable training checkpoint.
-        snapshot = {
-            "iteration": iteration,
-            "modules": {name: module.state_dict() for name, module in modules.items()},
-            "gradients": {
-                f"{module_name}.{name}": parameter.grad
-                for module_name, module in modules.items()
-                for name, parameter in module.named_parameters() if parameter.grad is not None
-            },
-            "batches": batches,
-            "rng_cpu_before_update": rng_cpu,
-            "rng_cuda_before_update": rng_cuda,
-        }
-        torch.save(snapshot, destination / "failure.pt")
-        print(f"Numerical diagnostic evidence: {destination}", flush=True)
-        raise
+def snapshot_rng(device: torch.device) -> dict:
+    """Read RNG states after sampling the batch and before running its forward pass."""
+    accelerator = None
+    if device.type == 'cuda':
+        accelerator = torch.cuda.get_rng_state(device)
+    elif device.type == 'mps':
+        accelerator = torch.mps.get_rng_state()
+    return {'device_type': device.type, 'cpu': torch.get_rng_state(), 'accelerator': accelerator}
+
+
+def restore_rng(state: dict, device: torch.device) -> None:
+    """Restore recorded generators on a device of the same type."""
+    torch.set_rng_state(state['cpu'])
+    if state['device_type'] != device.type:
+        return
+    if device.type == 'cuda':
+        torch.cuda.set_rng_state(state['accelerator'], device)
+    elif device.type == 'mps':
+        torch.mps.set_rng_state(state['accelerator'])
+
+
+class NumericalDiagnostics:
+    """Collect at most one finite model spike per run and save failed updates."""
+
+    def __init__(self, output: Path, device: torch.device, threshold: float, warmup_iterations: int):
+        self.output = output / 'diagnostics'
+        self.device = device
+        self.threshold = threshold
+        self.warmup_iterations = warmup_iterations
+        self.iteration = 0
+        self.model_spike_saved = False
+
+    def begin(self, kind: str, batch: dict[str, torch.Tensor], modules: dict[str, nn.Module],
+              *, cuda_graph: bool) -> 'UpdateSnapshot':
+        """Associate the current minibatch with its RNG state."""
+        return UpdateSnapshot(self, kind, batch, modules, snapshot_rng(self.device), cuda_graph)
+
+
+@dataclass
+class UpdateSnapshot:
+    """Write one update's inputs, weights, and available unclipped gradients."""
+
+    diagnostics: NumericalDiagnostics
+    kind: str
+    batch: dict[str, torch.Tensor]
+    modules: dict[str, nn.Module]
+    rng: dict
+    cuda_graph: bool
+
+    def check_loss(self, loss: torch.Tensor) -> None:
+        """Capture the first large finite model minibatch loss after warmup."""
+        run = self.diagnostics
+        if self.kind != 'model' or run.model_spike_saved or run.iteration <= run.warmup_iterations:
+            return
+        value = loss.detach().item()
+        if value > run.threshold:
+            run.model_spike_saved = self._save('loss-spike', 'forward', value)
+
+    def failed(self, phase: str, error: RuntimeError, loss: torch.Tensor) -> None:
+        """Save available gradients before the original exception is raised again."""
+        self._save('failure', phase, loss, str(error), include_gradients=phase != 'loss')
+
+    def _save(self, trigger: str, phase: str, loss: float | torch.Tensor, error: str | None = None,
+              *, include_gradients: bool = False) -> bool:
+        run = self.diagnostics
+        destination = run.output / f'iteration-{run.iteration}-{self.kind}-{trigger}'
+        try:
+            value = loss.detach().item() if isinstance(loss, torch.Tensor) else loss
+            updated = 'world_model' if self.kind == 'model' else self.kind
+            destination.mkdir(parents=True, exist_ok=True)
+            report = {
+                'iteration': run.iteration, 'kind': self.kind, 'trigger': trigger, 'phase': phase,
+                'loss': value if math.isfinite(value) else None,
+                'error': error, 'cuda_graph': self.cuda_graph,
+                'gradients': gradient_report({updated: self.modules[updated]}) if include_gradients else {},
+            }
+            snapshot = {
+                **report,
+                'modules': {name: module.state_dict() for name, module in self.modules.items()},
+                'batch': self.batch,
+                'rng': self.rng,
+            }
+            temporary = destination / 'snapshot.pt.tmp'
+            torch.save(snapshot, temporary)
+            temporary.replace(destination / 'snapshot.pt')
+            (destination / 'snapshot.json').write_text(json.dumps(report, indent=2, allow_nan=False) + '\n')
+        except (OSError, RuntimeError, ValueError) as save_error:
+            print(f'Numerical diagnostic snapshot failed: {save_error}', flush=True)
+            return False
+        print(f'Numerical diagnostic snapshot: {destination}', flush=True)
+        return True

@@ -243,7 +243,7 @@ class DynamicsModel(nn.Module):
                                 rotate(after[:, 4:7]), rotate(after[:, 7:10]), after[:, 10:]), -1)
         return next_state, delta[:, STATE_DIM:], contact_logits
 
-    def loss(self, window):
+    def loss(self, window, *, error_trace: list[tuple[torch.Tensor, torch.Tensor]] | None = None):
         state = window['state'][:, 0]
         wrenches = window.get('link_wrenches_world')
         total = state.new_zeros(())
@@ -253,8 +253,10 @@ class DynamicsModel(nn.Module):
                 state, window['action'][:, j], window['previous_action'][:, j], window['features'][:, j], wrenches_world
             )
             # Compare full autoregressive state, not only the current step's increment.
-            error = self.targets(window['next_state'][:, j], predicted,
-                                 torque - window['torque'][:, j]) / self.output_norm.scale()
+            raw_error = self.targets(window['next_state'][:, j], predicted, torque - window['torque'][:, j])
+            error = raw_error / self.output_norm.scale()
+            if error_trace is not None:
+                error_trace.append((raw_error.detach(), error.detach()))
             total = total + (error.square().mean(-1) * window['valid'][:, j]).sum()
             state = predicted
         loss = total / window['valid'].sum().clamp(min=1)

@@ -143,11 +143,16 @@ python scripts/evaluate.py --task point-push --run-dir <训练目录> \
 
 训练启动时会打印绝对输出路径。历史 `runs/` 及当前已有产物保持原位，仍被忽略，不自动迁移。
 
-SuperMimic 数值异常定位可在 `scripts/train.py` 增加 `--numerical-diagnostics`。
-该模式自动关闭 `torch.compile` 和 CUDA Graph，启用 autograd 异常追踪，速度会降低。
-异常的前向调用栈写入 `train.log`；失败轮次、逐参数梯度统计保存在
-`training/diagnostics/iteration-<轮次>/failure.json`，网络、梯度、最近采样批次和更新前
-PyTorch 随机数状态保存在同目录的 `failure.pt`。诊断快照用于排查，不作为续训 checkpoint。
+SuperMimic 可用 `--numerical-diagnostics` 保存异常更新，编译和 CUDA Graph 按实验配置运行。
+预热结束后，首个超过 `trainer.diagnostic_model_loss_threshold`（默认 1.0）的有限世界模型小批次
+在优化器更新前保存。损失或梯度检查报错时也保存现场，随后仍按原错误退出。
+每次捕获在 `training/diagnostics/iteration-<轮次>-<更新类型>-<触发原因>/` 下写
+`snapshot.json` 和 `snapshot.pt`，包含对应批次、权重、归一化统计、前向前的 RNG 状态和可用的梯度统计。
+
+使用 `python scripts/train.py --replay-diagnostic <snapshot.pt>` 重算该批次的前向和反向，
+需保留同一训练目录中的 `training/config.json`。CUDA 上从同一快照配对运行 eager 和 compile，
+输出 loss、逐层梯度及 float64 范数；世界模型重放还报告 eager 中误差最大的样本、预测步和输出维度。
+eager 重放出现坏梯度时会再开启 autograd 异常追踪。重放不执行训练更新，且不重放 CUDA Graph。
 
 ## 环境与资产
 

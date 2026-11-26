@@ -4,7 +4,7 @@ Independent reproduction inspired by Zhengtianjin/go2-supermimic (MIT) and
 Liao et al., arXiv:2610.28480. No mjlab code or task-specific assets are required.
 """
 from collections.abc import Sequence
-from contextlib import closing, contextmanager, nullcontext
+from contextlib import closing, contextmanager
 from dataclasses import asdict, dataclass
 from functools import partial
 import json
@@ -23,7 +23,7 @@ from rl_go2.observations import SensorReadings
 from rl_go2.point_push import Go2PushGeometry, PointPushConfig, PointPushScheduler, PushState
 from rl_go2.step_delay import StepDelayState
 from rl_go2.trainers.model_learning import DynamicsModel, ReplayBuffer, RunningNorm, heading, local_state, mlp, pack, unpack
-from rl_go2.trainers.numerical_diagnostics import diagnose_update
+from rl_go2.trainers.numerical_diagnostics import NumericalDiagnostics, UpdateSnapshot
 
 OFFICIAL_REPLAY_RATIO = 16
 
@@ -52,6 +52,7 @@ class TrainConfig:
     compile_training: bool = True
     cuda_graph: bool = True
     numerical_diagnostics: bool = False
+    diagnostic_model_loss_threshold: float = 1.0
     bootstrap_weight: float = 0.0
     driver_policy: str | None = None
     driver_fraction: float = 0.5
@@ -78,8 +79,8 @@ class TrainConfig:
     def validate(self):
         if type(self.numerical_diagnostics) is not bool:
             raise ValueError('numerical_diagnostics must be a boolean')
-        if self.numerical_diagnostics and (self.compile_training or self.cuda_graph):
-            raise ValueError('Numerical diagnostics requires compile_training=False and cuda_graph=False')
+        if not math.isfinite(self.diagnostic_model_loss_threshold) or self.diagnostic_model_loss_threshold <= 0:
+            raise ValueError('diagnostic_model_loss_threshold must be finite and positive')
         for key in ('tf32', 'fused_adam', 'compile_training', 'cuda_graph'):
             if type(getattr(self, key)) is not bool:
                 raise ValueError(f'{key} must be a boolean')
@@ -160,14 +161,25 @@ def frozen(*modules):
             p.requires_grad_(flag)
 
 
-def optimize(loss, optimizer, parameters, norm, value=None, *, backward=True, step=None):
+def optimize(loss, optimizer, parameters, norm, value=None, *, backward=True, step=None,
+             diagnostic: UpdateSnapshot | None = None):
     parameters = list(parameters)
-    if not torch.isfinite(loss):
-        raise RuntimeError('Non-finite SuperMimic loss')
-    if backward:
-        optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-    grad = nn.utils.clip_grad_norm_(parameters, norm, error_if_nonfinite=True)
+    phase = 'loss'
+    try:
+        if not torch.isfinite(loss):
+            raise RuntimeError('Non-finite SuperMimic loss')
+        if diagnostic is not None:
+            diagnostic.check_loss(loss)
+        if backward:
+            phase = 'backward'
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+        phase = 'gradients'
+        grad = nn.utils.clip_grad_norm_(parameters, norm, error_if_nonfinite=True)
+    except RuntimeError as error:
+        if diagnostic is not None:
+            diagnostic.failed(phase, error, loss)
+        raise
     if value is not None:
         nn.utils.clip_grad_value_(parameters, value)
     (optimizer.step if step is None else step)()
@@ -374,9 +386,9 @@ class GraphedBackward:
 
 
 class Trainer:
-    def __init__(self, env, cfg):
+    def __init__(self, env, cfg, diagnostics: NumericalDiagnostics | None = None):
         self.env, self.cfg = env, cfg
-        self.diagnostic_batches: dict[str, dict[str, torch.Tensor]] = {}
+        self.diagnostics = diagnostics
         required = ('model_features', 'advance_context', 'termination_probability')
         if any(not callable(getattr(env.task, key, None)) for key in required):
             raise ValueError(f'Task must implement model-learning hooks: {required}')
@@ -567,8 +579,9 @@ class Trainer:
                                                 complete_frames=self.cfg.uses_official_schedule)
             if self.model.contact_head is not None:
                 window.update(self.replay.sample_contacts(self.cfg.model_batch))
-            if self.cfg.numerical_diagnostics:
-                self.diagnostic_batches['model'] = window
+            diagnostic = self.diagnostics.begin(
+                'model', window, {'world_model': self.model}, cuda_graph=use_graph,
+            ) if self.diagnostics is not None else None
             if use_graph:
                 if self.graphed_model_backward is None:
                     with torch.cuda.device(self.env.device):
@@ -577,7 +590,8 @@ class Trainer:
                 loss, _ = self.graphed_model_backward(window)
             else:
                 loss = self.model_loss(window)
-            optimize(loss, self.model_optimizer, self.model.parameters(), self.cfg.grad_norm, backward=not use_graph)
+            optimize(loss, self.model_optimizer, self.model.parameters(), self.cfg.grad_norm,
+                     backward=not use_graph, diagnostic=diagnostic)
             losses.append(loss.item())
         return sum(losses) / len(losses)
 
@@ -616,8 +630,10 @@ class Trainer:
         cfg = self.cfg
         start = perf_counter()
         seed = self.replay.sample_starts(cfg.imagination_batch)
-        if cfg.numerical_diagnostics:
-            self.diagnostic_batches['actor'] = seed
+        diagnostic = self.diagnostics.begin(
+            'actor', seed, {'actor': self.actor, 'world_model': self.model, 'critic': self.critic},
+            cuda_graph=self.use_cuda_graph,
+        ) if self.diagnostics is not None else None
         with frozen(self.model, self.critic):
             if self.use_cuda_graph:
                 if self.graphed_actor_backward is None:
@@ -630,7 +646,8 @@ class Trainer:
             objective, data, survival, behavior = outputs
             grad = optimize(loss, self.actor_optimizer, self.actor.parameters(), cfg.grad_norm,
                             cfg.actor_grad_value, backward=not self.use_cuda_graph,
-                            step=self.graphed_actor_backward.step if self.use_cuda_graph else None)
+                            step=self.graphed_actor_backward.step if self.use_cuda_graph else None,
+                            diagnostic=diagnostic)
         stats = {'imagined_return': objective.item(), 'imagined_survival': survival.item(),
                  'actor_grad_norm': grad, 'behavior_loss': behavior.item(), 'critic_loss': 0.0}
         critic_start = perf_counter()
@@ -648,8 +665,9 @@ class Trainer:
                 ids = torch.randperm(x.shape[0], device=x.device).tensor_split(cfg.critic_minibatches)
             for minibatch in ids:
                 batch = {'inputs': x[minibatch], 'targets': targets[minibatch]}
-                if cfg.numerical_diagnostics:
-                    self.diagnostic_batches['critic'] = batch
+                diagnostic = self.diagnostics.begin(
+                    'critic', batch, {'critic': self.critic}, cuda_graph=graph_critic,
+                ) if self.diagnostics is not None else None
                 if graph_critic:
                     if self.graphed_critic_backward is None:
                         with torch.cuda.device(self.env.device):
@@ -660,7 +678,8 @@ class Trainer:
                 else:
                     loss = self.critic_loss(**batch)
                 optimize(loss, self.critic_optimizer, self.critic.parameters(), cfg.grad_norm,
-                         backward=not graph_critic, step=self.graphed_critic_backward.step if graph_critic else None)
+                         backward=not graph_critic, step=self.graphed_critic_backward.step if graph_critic else None,
+                         diagnostic=diagnostic)
                 losses.append(loss.item())
         stats['critic_loss'] = sum(losses) / len(losses)
         stats['critic_seconds'] = perf_counter() - critic_start
@@ -708,14 +727,19 @@ def train(config, output):
     with reserve_startup_memory(reserve_gib):
         save_run_spec(config, output)
         output = Path(output)
+        diagnostics = NumericalDiagnostics(
+            output, torch.device(config['device']), cfg.diagnostic_model_loss_threshold,
+            cfg.world_model_warmup_iterations,
+        ) if cfg.numerical_diagnostics else None
         with (output / 'metrics.jsonl').open('w') as log:
             if courses:
-                _train_courses(config, cfg, output, log)
+                _train_courses(config, cfg, output, log, diagnostics)
             else:
-                _train_stage(config, cfg, output, log, 1, cfg.iterations)
+                _train_stage(config, cfg, output, log, 1, cfg.iterations, diagnostics=diagnostics)
 
 
-def _train_courses(config, cfg: TrainConfig, output: Path, log) -> None:
+def _train_courses(config, cfg: TrainConfig, output: Path, log,
+                   diagnostics: NumericalDiagnostics | None = None) -> None:
     first = 1
     progress = (0, 0)
     previous = None
@@ -724,7 +748,7 @@ def _train_courses(config, cfg: TrainConfig, output: Path, log) -> None:
         print(f"Course {index}: {course['name']} (iterations {first}–{last})", flush=True)
         progress, previous = _train_stage(
             {**config, **course['settings']}, cfg, output, log, first, last,
-            progress=progress, previous=previous, course_index=index,
+            progress=progress, previous=previous, course_index=index, diagnostics=diagnostics,
         )
         if last == cfg.iterations:
             break
@@ -737,7 +761,8 @@ def _train_courses(config, cfg: TrainConfig, output: Path, log) -> None:
 
 
 def _train_stage(config, cfg: TrainConfig, output: Path, log, first: int, last: int, *,
-                 progress=(0, 0), previous=None, course_index: int | None = None):
+                 progress=(0, 0), previous=None, course_index: int | None = None,
+                 diagnostics: NumericalDiagnostics | None = None):
     from rl_go2.trainers.supermimic_courses import continue_from_course, input_layouts
     from rl_go2.trainers.supermimic_init import initialize_weights
 
@@ -745,7 +770,7 @@ def _train_stage(config, cfg: TrainConfig, output: Path, log, first: int, last: 
     env = QuadrupedEnv(config, record_transitions=True)
     with closing(env), cuda_matmul_tf32(cfg.tf32 and env.device.type == 'cuda'):
         env.environment_steps = environment_steps
-        trainer = Trainer(env, cfg)
+        trainer = Trainer(env, cfg, diagnostics) if diagnostics is not None else Trainer(env, cfg)
         if previous is not None:
             continue_from_course(trainer, output / f'model_{first - 1}.pt', previous)
         elif cfg.init_checkpoint is not None:
@@ -756,6 +781,8 @@ def _train_stage(config, cfg: TrainConfig, output: Path, log, first: int, last: 
         replay_budget = env.num_envs * cfg.collect_steps * OFFICIAL_REPLAY_RATIO
         update_cost = cfg.model_updates * cfg.model_batch * cfg.model_window
         for iteration in range(first, last + 1):
+            if diagnostics is not None:
+                diagnostics.iteration = iteration
             start = perf_counter()
             model_only = iteration <= cfg.world_model_warmup_iterations
             stats = trainer.collect(update_actor_norm=not model_only)
@@ -771,29 +798,21 @@ def _train_stage(config, cfg: TrainConfig, output: Path, log, first: int, last: 
                 if trainer.replay.size < cfg.model_window:
                     updates = 0
             for _ in range(updates):
-                trainer.diagnostic_batches.clear()
-                diagnostic = (
-                    diagnose_update(output, iteration,
-                                    {'actor': trainer.actor, 'world_model': trainer.model,
-                                     'critic': trainer.critic}, trainer.diagnostic_batches)
-                    if cfg.numerical_diagnostics else nullcontext()
-                )
-                with diagnostic:
-                    model_start = perf_counter()
-                    stats['model_loss'] = trainer.fit_model()
-                    stats['model_seconds'] += perf_counter() - model_start
-                    if model_only:
-                        continue
-                    if iteration > cfg.warmup_iterations:
-                        policy = trainer.improve_policy()
-                        policy['actor_seconds'] += stats['actor_seconds']
-                        policy['critic_seconds'] += stats['critic_seconds']
-                        stats.update(policy)
-                        policy_updates += 1
-                    elif cfg.behavior_updates:
-                        actor_start = perf_counter()
-                        stats['behavior_loss'] = trainer.warmup_actor()
-                        stats['actor_seconds'] += perf_counter() - actor_start
+                model_start = perf_counter()
+                stats['model_loss'] = trainer.fit_model()
+                stats['model_seconds'] += perf_counter() - model_start
+                if model_only:
+                    continue
+                if iteration > cfg.warmup_iterations:
+                    policy = trainer.improve_policy()
+                    policy['actor_seconds'] += stats['actor_seconds']
+                    policy['critic_seconds'] += stats['critic_seconds']
+                    stats.update(policy)
+                    policy_updates += 1
+                elif cfg.behavior_updates:
+                    actor_start = perf_counter()
+                    stats['behavior_loss'] = trainer.warmup_actor()
+                    stats['actor_seconds'] += perf_counter() - actor_start
             stats.update(iteration=iteration, environment_steps=env.environment_steps,
                          policy_updates=policy_updates)
             if course_index is not None:

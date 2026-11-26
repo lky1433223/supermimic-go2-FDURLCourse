@@ -29,9 +29,16 @@ def main():
     parser.add_argument("--output", type=Path, help="Run root; model artifacts are written under training/")
     parser.add_argument("--init-checkpoint", type=Path, help="Initialize training weights from a checkpoint")
     parser.add_argument("--driver-policy", type=Path, help="Optional TorchScript data driver for SuperMimic")
-    parser.add_argument("--numerical-diagnostics", action="store_true",
-                        help="Trace SuperMimic autograd failures; disable compile and CUDA Graph")
+    diagnostics = parser.add_mutually_exclusive_group()
+    diagnostics.add_argument("--numerical-diagnostics", action="store_true",
+                             help="Save SuperMimic loss spikes and failed updates with the configured execution mode")
+    diagnostics.add_argument("--replay-diagnostic", type=Path,
+                             help="Replay a saved numerical snapshot without running simulation steps")
     args = parser.parse_args()
+    if args.replay_diagnostic is not None:
+        from rl_go2.trainers.diagnostic_replay import replay_diagnostic
+        replay_diagnostic(args.replay_diagnostic, device=args.device)
+        return
     config = load_experiment(args.config)
     for key in ("backend", "device", "num_envs"):
         value = getattr(args, key)
@@ -41,7 +48,7 @@ def main():
     if args.numerical_diagnostics:
         if trainer["name"] != "supermimic":
             parser.error("--numerical-diagnostics requires the SuperMimic trainer")
-        trainer.update(numerical_diagnostics=True, compile_training=False, cuda_graph=False)
+        trainer["numerical_diagnostics"] = True
     if args.gpu_reserve_gib is not None:
         if not math.isfinite(args.gpu_reserve_gib) or args.gpu_reserve_gib < 0:
             parser.error("--gpu-reserve-gib must be finite and nonnegative")
