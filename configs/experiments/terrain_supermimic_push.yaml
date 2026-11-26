@@ -11,6 +11,13 @@ scene:
       height_range_m: [0.02, 0.06]
       length_m: 0.60
       width_m: 1.20
+    stairs:
+      weight: 1
+      map_count: 1
+      step_height_m: 0.05
+      tread_depth_m: 0.30
+      num_steps: 10
+      width_m: 1.20
     ramp:
       weight: 1
       slope_range_deg: [5.0, 10.0]

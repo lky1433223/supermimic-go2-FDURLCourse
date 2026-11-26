@@ -15,7 +15,7 @@ def playback_scene(scene: dict, robot: dict, seed: int, repo: Path) -> dict:
     robot_entity = next(entity for entity in scene['entities'] if entity.get('robot'))
     spec = {
         'sim_options': scene['sim_options'],
-        'terrains': {kind: {'map_count': 1} for kind in ('flat', 'step', 'ramp', 'rough_ground')},
+        'terrains': {kind: {'map_count': 1} for kind in ('flat', 'step', 'stairs', 'ramp', 'rough_ground')},
     }
     robot_path = repo / 'configs/robots/go2.yaml'
     generated = build_training_scene(spec, {**robot, 'file': robot_entity['file']}, robot_path, seed)

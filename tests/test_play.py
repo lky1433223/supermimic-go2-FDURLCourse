@@ -40,13 +40,13 @@ class PlayTests(unittest.TestCase):
                 patches = scene['terrain_patches']
                 order = terrain_order(patches)
                 self.assertCountEqual(order, range(len(patches)))
-                self.assertEqual([patches[index]['type'] for index in order[:4]],
-                                 ['flat', 'step', 'ramp', 'rough_ground'])
+                self.assertEqual([patches[index]['type'] for index in order[:5]],
+                                 ['flat', 'step', 'stairs', 'ramp', 'rough_ground'])
                 env = QuadrupedEnv(config)
                 viewer = Mock()
                 controls = Controls(0.8, 0.5)
                 try:
-                    for cursor, index in enumerate(order[:4]):
+                    for cursor, index in enumerate(order[:5]):
                         select_playback_terrain(env, viewer, controls, order, cursor)
                         expected = torch.tensor([patches[index]['position']])
                         torch.testing.assert_close(env.state.position, expected)

@@ -128,7 +128,7 @@ class FrameworkTests(unittest.TestCase):
         weights = {}
         for patch in patches:
             weights[patch['type']] = weights.get(patch['type'], 0) + patch['weight']
-        self.assertEqual(weights, dict.fromkeys(('flat', 'step', 'ramp', 'rough_ground'), 1.0))
+        self.assertEqual(weights, dict.fromkeys(('flat', 'step', 'stairs', 'ramp', 'rough_ground'), 1.0))
         config['domain_randomization'] = {}
         env = QuadrupedEnv(config, backend=FakeBackend(config))
         env.reset()

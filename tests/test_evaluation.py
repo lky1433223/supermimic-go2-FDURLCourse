@@ -158,10 +158,11 @@ class EvaluationTests(unittest.TestCase):
     def test_terrain_plan_resolves_one_box_per_step_and_partitions_outputs(self):
         task = TASKS['terrain']
         plan = task.build_plan()
-        obstacles = ['step-5cm', 'step-10cm', 'ramp-10deg', 'ramp-20deg', 'rough-101', 'rough-102']
+        obstacles = ['step-5cm', 'step-10cm', 'stairs-5cm', 'stairs-10cm',
+                     'ramp-10deg', 'ramp-20deg', 'rough-101', 'rough-102']
         scenes = [*obstacles, *(f'{name}-side' for name in obstacles)]
         self.assertEqual([trial.scene for trial in plan.trials], scenes)
-        self.assertEqual(len({trial.event_key(1) for trial in plan.trials}), 12)
+        self.assertEqual(len({trial.event_key(1) for trial in plan.trials}), 16)
         self.assertEqual({trial.motion.duration_seconds for trial in plan.trials}, {8})
         for trial in plan.trials:
             lateral = trial.scene.endswith('-side')
@@ -258,7 +259,7 @@ class EvaluationTests(unittest.TestCase):
         expected_commands = {(0, 0, 0), (0.5, 0, 0), (-0.5, 0, 0), (0, 0.5, 0),
                              (0, 0, 0.5), (2, 0, 0), (0.5, 0, 0.5), (0.5, 0, -0.5)}
         for name, task in TASKS.items():
-            if name in ('rich-motion', 'terrain', 'combined'):
+            if name in ('rich-motion', 'terrain', 'stairs', 'combined'):
                 continue
             groups = {}
             for trial in task.build_plan().trials:

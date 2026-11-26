@@ -127,6 +127,11 @@ python scripts/evaluate.py --task point-push --run-dir <训练目录> \
 `configs/scenes/flat.yaml` 使用单个平面，`configs/scenes/single_step.yaml` 在平面上增加一个固定箱体。
 台阶的 `height_m` 按米配置。调整高度时，箱体前沿和底面位置固定。
 `configs/scenes/ramp.yaml` 包含上坡、平台和下坡。`slope_deg` 控制坡度，`run_m` 是每段坡的水平长度，平台高度由这两个参数决定。
+`configs/scenes/stairs.yaml` 包含沿 +X 连续上升的台阶，支持 `step_height_m`（每级高度）、
+`tread_depth_m`（踏面深度）、`num_steps`（级数）和 `width_m`（宽度）。默认 10 级，每级高 5 cm、深 30 cm、宽 1.2 m。
+最后一级之后回到原地面，末端是总高度的垂直落差。
+`--task terrain` 包含连续台阶，`--task stairs` 可单独选择连续台阶评测，覆盖每级 5/10 cm 的 10 级台阶及正走、侧走。
+评测尺寸可在 `evaluation/tasks/terrain.py` 的 `SceneSpec.entity_overrides` 中覆盖。
 训练配置可用 `scene: ../scenes/single_step.yaml` 或 `scene: ../scenes/ramp.yaml` 选择地形。
 评测套件在 `EvaluationGroup` 中选择场景、工况与动作，可通过 `SceneSpec.entity_overrides` 复用地形文件并指定多个高度或坡度。
 当前地形套件使用平地步行任务的奖励和终止规则。
@@ -519,7 +524,8 @@ Actor、Critic、奖励和终止仍使用原有定义。机器人控制配置一
 
 `configs/experiments/terrain_supermimic_push.yaml` 提供多地形联合泛化配方。
 该配方通过 `robot_overrides.joint_position_limits` 将四个髋外展关节的物理范围设为约 ±48°，PD 目标在两端各留 0.05 rad。限位按关节名合并并随训练配置保存，Genesis 和 MuJoCo 都使用合并后的范围。已有 checkpoint 的限位不同时，使用该配方从零训练。
-`scene.terrains` 以 `flat`、`step`、`ramp`、`rough_ground` 为键，声明本次训练要生成的地形。
+`scene.terrains` 以 `flat`、`step`、`stairs`、`ramp`、`rough_ground` 为键，声明本次训练要生成的地形。
+`terrain_supermimic_push.yaml` 的 `stairs` 项已配置一组连续台阶，四个尺寸参数与场景文件同名，`weight` 控制采样权重。
 `weight` 决定每回合选择各类别的相对概率，类别内部均匀选择地块。
 各类可通过 `map_count` 指定地块数量，默认平地 1 块，其余各 8 块。
 台阶的 `height_range_m`、缓坡的 `slope_range_deg` 在启动时采样具体参数，随机地面使用连续种子生成。

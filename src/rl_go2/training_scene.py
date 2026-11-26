@@ -15,7 +15,7 @@ def build_training_scene(spec: dict, robot: dict, robot_path: Path, seed: int) -
     if spec.keys() - {'sim_options', 'terrains'}:
         raise ValueError('Training scene supports sim_options and terrains')
     terrains = spec.get('terrains', {})
-    if not terrains or terrains.keys() - {'flat', 'step', 'ramp', 'rough_ground'}:
+    if not terrains or terrains.keys() - {'flat', 'step', 'stairs', 'ramp', 'rough_ground'}:
         raise ValueError('Choose at least one supported training terrain')
     scene_dir = Path(__file__).resolve().parents[2] / 'configs/scenes'
     entities = [{'id': 'ground', 'type': 'plane', 'position': [0, 0, 0],
@@ -23,7 +23,8 @@ def build_training_scene(spec: dict, robot: dict, robot_path: Path, seed: int) -
     patches = []
     maps = {}
     rng = Random(seed ^ 0x54455252)
-    filenames = {'step': 'single_step.yaml', 'ramp': 'ramp.yaml', 'rough_ground': 'rough_ground.yaml'}
+    filenames = {'step': 'single_step.yaml', 'stairs': 'stairs.yaml',
+                 'ramp': 'ramp.yaml', 'rough_ground': 'rough_ground.yaml'}
     for kind, parameters in terrains.items():
         if not isinstance(parameters, dict):
             raise ValueError('Terrain parameters must be a mapping')

@@ -1,0 +1,29 @@
+schema: rl-go2.scene/v1
+# Equal-rise treads ascend along +X. Dimensions are metres.
+scene:
+  sim_options:
+    dt: 0.005
+    gravity: [0, 0, -9.81]
+  entities:
+    - id: ground
+      type: plane
+      position: [0, 0, 0]
+      fixed: true
+      friction: 0.8
+    - id: stairs
+      type: stairs
+      start_x_m: 1.0
+      center_y_m: 0.0
+      base_z_m: 0.0
+      step_height_m: 0.05
+      tread_depth_m: 0.30
+      num_steps: 10
+      width_m: 1.20
+      friction: 0.8
+    - id: go2
+      type: mjcf
+      robot: true
+      file: ../../assets/robots/go2/go2.xml
+      position: [0, 0, 0.42]
+      rotation: [1, 0, 0, 0]
+  sensors: []

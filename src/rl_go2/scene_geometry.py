@@ -6,6 +6,8 @@ from random import Random
 
 
 STEP_FIELDS = {"length_m", "width_m", "height_m", "start_x_m", "center_y_m", "base_z_m"}
+STAIRS_FIELDS = {"step_height_m", "tread_depth_m", "num_steps", "width_m",
+                 "start_x_m", "center_y_m", "base_z_m"}
 RAMP_FIELDS = {"run_m", "width_m", "platform_length_m", "thickness_m", "slope_deg",
                "start_x_m", "center_y_m", "base_z_m"}
 ROUGH_GROUND_INTEGERS = {"rows", "columns", "seed", "max_height_level", "max_adjacent_delta_levels"}
@@ -36,6 +38,28 @@ def step_box(entity: dict, overrides: Mapping[str, float]) -> dict:
         "position": [values["start_x_m"] + length / 2, values["center_y_m"], values["base_z_m"] + height / 2],
         "size": [length, width, height], "friction": values.get("friction", 0.8),
     }
+
+
+def stairs_boxes(entity: dict, overrides: Mapping[str, float]) -> list[dict]:
+    """Build adjacent solid treads ascending along world +X from the base plane.
+
+    Each tread has the same depth and rise. The last tread ends at the
+    configured depth of the flight, with a vertical drop to the base plane.
+    """
+    values = terrain_parameters(entity, overrides, STAIRS_FIELDS)
+    count = values['num_steps']
+    if type(count) is not int or count < 1:
+        raise ValueError(f"Stairs {entity['id']} num_steps must be a positive integer")
+    rise, depth, width = (values[key] for key in ('step_height_m', 'tread_depth_m', 'width_m'))
+    if min(rise, depth, width) <= 0:
+        raise ValueError(f"Stairs {entity['id']} dimensions must be positive")
+    return [step_box({
+        'id': f"{entity['id']}-{index}", 'type': 'step',
+        'start_x_m': values['start_x_m'] + index * depth,
+        'center_y_m': values['center_y_m'], 'base_z_m': values['base_z_m'],
+        'length_m': depth, 'width_m': width, 'height_m': (index + 1) * rise,
+        'friction': values.get('friction', 0.8),
+    }, {}) for index in range(count)]
 
 
 def inclined_box(name: str, top_center_m: tuple[float, float, float], slope_rad: float,
@@ -143,6 +167,8 @@ def resolve_terrain_entities(
         kind, name = entity["type"], entity["id"]
         if kind == "step":
             resolved.append(step_box(entity, remaining.pop(name, {})))
+        elif kind == "stairs":
+            resolved.extend(stairs_boxes(entity, remaining.pop(name, {})))
         elif kind == "ramp":
             resolved.extend(ramp_boxes(entity, remaining.pop(name, {})))
         elif kind == "rough_ground":

@@ -6,9 +6,9 @@ from .point_push import PointPushTask
 from .rich_motion import RichMotionTask
 from .rollout import RolloutTask
 from .sensor_action import SensorActionTask
-from .terrain import TerrainTask
+from .terrain import StairsTask, TerrainTask
 
 TASKS = {task.TASK: task for task in (
     RichMotionTask(), LowFrictionTask(), RolloutTask(), MassTask(), ComOffsetTask(), PointPushTask(),
-    TerrainTask(), SensorActionTask(), CombinedTask(),
+    TerrainTask(), StairsTask(), SensorActionTask(), CombinedTask(),
 )}
