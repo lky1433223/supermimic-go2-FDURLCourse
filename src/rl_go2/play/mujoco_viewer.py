@@ -79,11 +79,13 @@ class MujocoPlayViewer:
             return
         mapping = {glfw.KEY_W: 'w', glfw.KEY_S: 's', glfw.KEY_A: 'a', glfw.KEY_D: 'd',
                    glfw.KEY_Q: 'q', glfw.KEY_E: 'e', glfw.KEY_UP: 'up', glfw.KEY_DOWN: 'down',
+                   glfw.KEY_LEFT: 'left', glfw.KEY_RIGHT: 'right',
                    glfw.KEY_SPACE: 'stop', glfw.KEY_P: 'pause',
                    glfw.KEY_R: 'reset', glfw.KEY_ESCAPE: 'quit', glfw.KEY_F1: 'details',
+                   glfw.KEY_F2: 'conditions', glfw.KEY_ENTER: 'apply_condition',
                    glfw.KEY_N: 'next_terrain'}
         if key in mapping:
-            if action == glfw.PRESS and mapping[key] in {'pause', 'reset', 'stop', 'quit'}:
+            if action == glfw.PRESS and mapping[key] in {'pause', 'reset', 'stop', 'quit', 'conditions'}:
                 self.release_forces()
             self.controls.key_event(mapping[key], action != glfw.RELEASE, action == glfw.REPEAT)
 

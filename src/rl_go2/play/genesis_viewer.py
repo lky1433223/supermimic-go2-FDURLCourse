@@ -17,7 +17,7 @@ class ForceDragPlugin(MouseInteractionPlugin):
         self.on_mouse_release(0, 0, mouse.LEFT, 0)
 
     def on_key_press(self, symbol: int, modifiers: int) -> None:
-        if symbol in (key.P, key.R, key.SPACE, key.ESCAPE):
+        if symbol in (key.P, key.R, key.SPACE, key.ESCAPE, key.F2):
             self.on_mouse_release(0, 0, mouse.LEFT, 0)
 
 
@@ -32,8 +32,9 @@ class PlaybackPlugin(ViewerPlugin):
         self.labels: list[pyglet.text.Label] = []
         self.held: set[int] = set()
         self.mapping = {key.W: 'w', key.S: 's', key.A: 'a', key.D: 'd', key.Q: 'q', key.E: 'e',
-                        key.UP: 'up', key.DOWN: 'down',
+                        key.UP: 'up', key.DOWN: 'down', key.LEFT: 'left', key.RIGHT: 'right',
                         key.SPACE: 'stop', key.P: 'pause', key.R: 'reset', key.ESCAPE: 'quit', key.F1: 'details',
+                        key.F2: 'conditions', key.ENTER: 'apply_condition',
                         key.N: 'next_terrain'}
 
     def on_key_press(self, symbol: int, modifiers: int) -> bool | None:

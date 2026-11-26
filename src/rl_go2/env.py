@@ -146,6 +146,42 @@ class QuadrupedEnv:
         self.foot_friction[env_ids] = ratio[:, None] * self.friction_switch_base
         self.friction_steps_left[env_ids] = steps.to(self.device)
 
+    def set_fixed_friction_multiplier(self, multiplier: float) -> None:
+        """Apply an absolute multiplier to the fixed per-foot friction without resetting."""
+        if self.friction_bounds is None or self.friction_switch_steps is not None:
+            raise ValueError("Fixed friction adjustment requires fixed per-foot friction")
+        low, high = self.friction_bounds.unbind(-1)
+        if not torch.equal(low, high) or not math.isfinite(multiplier) or multiplier <= 0:
+            raise ValueError("Fixed friction adjustment requires constant bounds and a positive multiplier")
+        self.friction_multipliers.fill_(multiplier)
+        env_ids = torch.arange(self.num_envs, device=self.device)
+        self.backend.set_foot_friction_multipliers(self.friction_multipliers.to(self.device), env_ids)
+        self.foot_friction.copy_((multiplier * low).flatten().to(self.device).expand_as(self.foot_friction))
+
+    def reset_with_episode_parameters(
+        self, *, mass_scale: float, com_offset_m: tuple[float, float, float],
+        observation_noise: dict, action_delay_steps: int,
+    ) -> None:
+        """Set fixed body and sensor parameters and reset on the currently selected terrain."""
+        if self.base_mass_kg is None or self.base_com_offset_m is None:
+            raise ValueError("Episode adjustment requires enabled base mass and CoM")
+        config = {'domain_randomization': {
+            'observation_noise': observation_noise,
+            'action_delay_steps': [action_delay_steps, action_delay_steps],
+        }}
+        action_delay = action_delay_from_config(config)
+        noise = ObservationNoise.from_config(config, device=self.device, dtype=self.controller.default.dtype)
+        self.base_mass_kg = self.backend.set_base_mass_scale(torch.full((self.num_envs, 1), mass_scale))
+        offsets = torch.tensor(com_offset_m).expand(self.num_envs, -1).contiguous()
+        self.backend.set_base_com_offset(offsets)
+        self.base_com_offset_m = offsets.to(self.device)
+        self.action_delay = action_delay
+        self.action_delay_state = None
+        self.observation_noise = noise
+        self._sensor_readings = None
+        self.noise_history = {}
+        self.reset()
+
     def advance_context(self, context, state):
         context = self.task.advance_context(context, state)
         if "episode_step" in context:

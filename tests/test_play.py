@@ -95,6 +95,77 @@ class PlayTests(unittest.TestCase):
                 expected[key] = 0.6
                 self.assertEqual(controls.status()['speeds'], expected)
 
+    def test_condition_menu_pauses_driving_and_queues_only_confirmed_settings(self):
+        from rl_go2.play.hud import layout_hud
+
+        controls = Controls((0.8, 0.7, 1.0))
+        controls.key_event('w', True)
+        controls.key_event('conditions', True)
+        self.assertEqual(controls.sample()[:2], ([0.0, 0.0, 0.0], True))
+        controls.key_event('right', True)
+        controls.key_event('w', True)
+        self.assertEqual(controls.sample()[0], [0.0, 0.0, 0.0])
+        self.assertIsNone(controls.consume_condition_request())
+        self.assertIn('Unapplied changes', [label.value for label in layout_hud(controls.status()).labels])
+        controls.key_event('apply_condition', True)
+        condition = controls.consume_condition_request()
+        self.assertEqual(condition.friction, 20)
+        self.assertEqual(controls.status()['condition'].friction, 80)
+        controls.confirm_condition(condition)
+        controls.key_event('down', True)
+        controls.key_event('right', True)
+        controls.key_event('conditions', True)
+        controls.key_event('w', True, repeat=True)
+        self.assertEqual(controls.sample()[:2], ([0.0, 0.0, 0.0], False))
+        controls.key_event('conditions', True)
+        self.assertEqual(controls.status()['condition_draft'], condition)
+
+    def test_play_condition_updates_mujoco_and_preserves_selected_terrain(self):
+        from dataclasses import replace
+
+        import numpy as np
+        import torch
+
+        from rl_go2.config import load_experiment
+        from rl_go2.env import QuadrupedEnv
+        from rl_go2.evaluation.conditions import NOMINAL_SAMPLE, NOMINAL_SLIDING
+        from rl_go2.play.conditions import NOMINAL
+        from rl_go2.play.terrain import playback_scene
+
+        repo = Path(__file__).resolve().parents[1]
+        config = load_experiment(repo / 'configs/experiments/flat_supermimic.yaml')
+        config.update(backend='mujoco', device='cpu', num_envs=1)
+        config['scene'] = playback_scene(config['scene'], config['robot'], config['seed'], repo)
+        env = QuadrupedEnv(NOMINAL_SAMPLE.condition('nominal', NOMINAL_SLIDING).apply(config))
+        try:
+            env.select_terrain(1)
+            spawn = env.state.position.clone()
+            env.episode_length_buf.fill_(7)
+            low_friction = replace(NOMINAL, friction=20)
+            self.assertFalse(low_friction.apply(env, NOMINAL))
+            np.testing.assert_allclose(env.backend.model.geom_friction[env.backend.foot_ids, 0], 0.2)
+            self.assertEqual(env.episode_length_buf.item(), 7)
+
+            combined = replace(low_friction, mass=150, com_y=5, noise=1, sensor_delay=1, action_delay=1)
+            self.assertTrue(combined.apply(env, low_friction))
+            self.assertEqual(env.episode_length_buf.item(), 0)
+            torch.testing.assert_close(env.state.position, spawn)
+            self.assertAlmostEqual(env.backend.model.body_mass[env.backend.base],
+                                   env.backend.nominal_base_mass * 1.5)
+            np.testing.assert_allclose(env.backend.model.body_ipos[env.backend.base],
+                                       env.backend.nominal_base_com + [0, 0.05, 0])
+            self.assertEqual(env.action_delay_state.steps.item(), 1)
+            self.assertIsNotNone(env.observation_noise.frame_delay)
+            self.assertFalse(torch.equal(env.observe(), env.observe(clean=True)))
+
+            self.assertTrue(NOMINAL.apply(env, combined))
+            self.assertIsNone(env.action_delay_state)
+            self.assertIsNone(env.observation_noise)
+            torch.testing.assert_close(env.observe(), env.observe(clean=True))
+            np.testing.assert_allclose(env.backend.model.geom_friction[env.backend.foot_ids, 0], 0.8)
+        finally:
+            env.close()
+
     def test_release_focus_and_discrete_repeat(self):
         controls = Controls((0.8, 0.7, 1.0))
         controls.key_event('w', True)
@@ -149,6 +220,10 @@ class PlayTests(unittest.TestCase):
             MujocoPlayViewer._on_key(adapter, None, glfw.KEY_UP, 0, glfw.PRESS, 0)
             self.assertEqual(controls.sample()[0], expected)
             MujocoPlayViewer._on_key(adapter, None, key, 0, glfw.RELEASE, 0)
+        for key in (glfw.KEY_F2, glfw.KEY_RIGHT, glfw.KEY_ENTER):
+            MujocoPlayViewer._on_key(adapter, None, key, 0, glfw.PRESS, 0)
+        self.assertEqual(controls.consume_condition_request().friction, 20)
+        MujocoPlayViewer._on_key(adapter, None, glfw.KEY_F2, 0, glfw.PRESS, 0)
         MujocoPlayViewer._on_key(adapter, None, glfw.KEY_P, 0, glfw.PRESS, 0)
         MujocoPlayViewer._on_key(adapter, None, glfw.KEY_P, 0, glfw.REPEAT, 0)
         self.assertTrue(controls.sample()[1])

@@ -11,6 +11,7 @@ from rl_go2.env import QuadrupedEnv
 from rl_go2.evaluation.conditions import NOMINAL_SAMPLE, NOMINAL_SLIDING
 from rl_go2.evaluation.runner import load_policy
 from rl_go2.state import rotate_inverse
+from .conditions import NOMINAL
 from .controls import Controls
 from .terrain import playback_scene, terrain_order
 from .viewer import PlayViewer, create_viewer
@@ -66,6 +67,8 @@ def run_loop(env: QuadrupedEnv, policy: torch.nn.Module, controls: Controls,
     command = torch.zeros(1, 3, device=env.device)
     order = terrain_order(env.terrain_patches)
     cursor = 0
+    condition = NOMINAL
+    controls.publish(step_ms=env.dt * 1000)
     select_playback_terrain(env, viewer, controls, order, cursor)
     count = 0
     deadline = time.monotonic()
@@ -76,6 +79,14 @@ def run_loop(env: QuadrupedEnv, policy: torch.nn.Module, controls: Controls,
             target, paused, stopped, reset = controls.sample()
             if stopped:
                 break
+            requested = controls.consume_condition_request()
+            if requested is not None:
+                if requested.apply(env, condition):
+                    viewer.release_forces()
+                    command.zero_()
+                    controls.publish(actual=[0.0, 0.0, 0.0])
+                condition = requested
+                controls.confirm_condition(condition)
             switch = controls.consume_terrain_switch()
             if switch or reset:
                 if switch:
@@ -139,14 +150,13 @@ def main(argv: list[str] | None = None) -> None:
     forward, lateral, yaw = (max(abs(value) for value in axis) for axis in ranges)
     controls = Controls((forward, lateral, yaw))
     controls.publish(backend=args.backend, policy=str(path), iteration=iteration,
-                     training_ranges=ranges,
-                     physics=f'Nominal mass and CoM / foot friction {NOMINAL_SLIDING[0]:.1f}')
+                     training_ranges=ranges)
     env = QuadrupedEnv(config, viewer=args.backend == 'genesis')
     viewer = None
     try:
         policy = policy.to(env.device)
         viewer = create_viewer(env, controls, args.backend)
-        print('Focus the simulation window to use W/S, A/D, Q/E and the in-window HUD.', flush=True)
+        print('Focus the simulation window for W/S, A/D, Q/E and F2 conditions.', flush=True)
         run_loop(env, policy, controls, viewer, args.steps)
     except KeyboardInterrupt:
         pass
