@@ -6,7 +6,8 @@ import unittest
 
 import torch
 
-from rl_go2.config import load_experiment
+from rl_go2.config import load_experiment, read_yaml
+from rl_go2.surround_terrain import build_curriculum_patches
 from rl_go2.terrain_features import TerrainHeightScan
 
 
@@ -18,6 +19,24 @@ class SurroundTerrainTests(unittest.TestCase):
     def setUpClass(cls):
         config = load_experiment(ROOT / 'configs/experiments/curriculum_supermimic_rewards_graded.yaml')
         cls.scene = config['courses'][-1]['settings']['scene']
+
+    def test_full_course_fits_around_origin_with_stairs(self):
+        course = read_yaml(ROOT / 'configs/courses/terrain_graded.yaml')
+        course['terrains']['stairs'] = {
+            'step_height_levels_m': [0.02 + 0.005 * level for level in range(9)],
+            'tread_depth_m': 0.30,
+            'num_steps': 10,
+        }
+        _, patches, height_maps = build_curriculum_patches(course['terrains'], course['terrain_curriculum'], 1)
+        coordinates = {(x, y) for x, y, _ in (patch['position'] for patch in patches)}
+        self.assertEqual(coordinates, {(x, y) for x in range(-60, 61, 20) for y in range(-60, 61, 20)})
+        self.assertEqual(len(coordinates), len(patches))
+        for patch in patches:
+            if patch['name'] in height_maps:
+                x, y, _ = patch['position']
+                height_map = height_maps[patch['name']]
+                self.assertAlmostEqual(height_map['start_x_m'], x - patch['outer_half_width_m'])
+                self.assertEqual(height_map['center_y_m'], y)
 
     def test_flat_spawn_and_continuous_obstacles_at_sides_and_corners(self):
         scan = TerrainHeightScan(self.scene)

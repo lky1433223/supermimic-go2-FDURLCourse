@@ -1,7 +1,7 @@
 """Concurrent obstacle patches for the graded terrain course."""
 
 from collections.abc import Mapping, Sequence
-from math import ceil, cos, isfinite, pi, radians, sin, tan
+from math import ceil, cos, isfinite, pi, radians, sin, sqrt, tan
 from random import Random
 
 from rl_go2.scene_geometry import inclined_box
@@ -9,6 +9,7 @@ from rl_go2.scene_geometry import inclined_box
 
 MAX_TERRAIN_LEVEL = 9
 _LEVEL_ZERO_EXIT_M = 1.6
+_PATCH_SPACING_M = 20.0
 # Leave room for the 0.5 s upright check after reaching the elevated finish.
 _LANDING_WIDTH_M = 1.2
 _TERRAIN_FIELDS = {
@@ -218,9 +219,7 @@ def build_curriculum_patches(
     center = _positive_number(settings.get('spawn_half_width_m', 1.0), 'terrain_curriculum.spawn_half_width_m')
     if terrains.keys() - _TERRAIN_FIELDS.keys():
         raise ValueError('Terrain curriculum level 0 provides the flat ground for each obstacle type')
-    boxes = []
-    patches = []
-    height_maps = {}
+    patch_specs = []
     for kind, parameters in terrains.items():
         if not isinstance(parameters, Mapping) or parameters.keys() - (_TERRAIN_FIELDS[kind] | {'weight', 'friction'}):
             raise ValueError(f'Unsupported curriculum terrain settings for {kind}')
@@ -230,17 +229,32 @@ def build_curriculum_patches(
         patch_weight = weight / sum(len(group) for group in variants)
         for level, group in enumerate(variants):
             for variant, dimensions in enumerate(group):
-                y = len(patches) * 20.0
-                name = f'{kind}-level-{level}-{variant}'
-                inner, outer = center, max(center + 0.1, _LEVEL_ZERO_EXIT_M)
-                if level:
-                    obstacles, inner, outer, height_map = _obstacles(kind, name, y, center, dimensions, friction)
-                    boxes.extend(obstacles)
-                    if height_map is not None:
-                        height_maps[name] = height_map
-                patches.append({
-                    'name': name, 'type': kind, 'level': level, 'weight': patch_weight,
-                    'position': [0.0, y, 0.42], 'rotation': [1, 0, 0, 0],
-                    'inner_half_width_m': inner, 'outer_half_width_m': outer,
-                })
+                patch_specs.append((kind, level, variant, dimensions, patch_weight, friction))
+
+    # Genesis's default floor has finite collision bounds. Spread patches over
+    # both axes to keep the course near the origin even with several variants.
+    columns = max(1, ceil(sqrt(len(patch_specs))))
+    rows = ceil(len(patch_specs) / columns)
+    boxes = []
+    patches = []
+    height_maps = {}
+    for index, (kind, level, variant, dimensions, patch_weight, friction) in enumerate(patch_specs):
+        row, column = divmod(index, columns)
+        x = (column - (columns - 1) / 2) * _PATCH_SPACING_M
+        y = (row - (rows - 1) / 2) * _PATCH_SPACING_M
+        name = f'{kind}-level-{level}-{variant}'
+        inner, outer = center, max(center + 0.1, _LEVEL_ZERO_EXIT_M)
+        if level:
+            obstacles, inner, outer, height_map = _obstacles(kind, name, y, center, dimensions, friction)
+            for box in obstacles:
+                box['position'][0] += x
+            boxes.extend(obstacles)
+            if height_map is not None:
+                height_map['start_x_m'] += x
+                height_maps[name] = height_map
+        patches.append({
+            'name': name, 'type': kind, 'level': level, 'weight': patch_weight,
+            'position': [x, y, 0.42], 'rotation': [1, 0, 0, 0],
+            'inner_half_width_m': inner, 'outer_half_width_m': outer,
+        })
     return boxes, patches, height_maps
