@@ -148,6 +148,7 @@ def training_progress(run: Path, budget: int | None) -> tuple[dict, dict[str, li
         return {}, series
 
     latest = {}
+    terrain_levels = []
     stride = max(1, math.ceil((budget or 40000) / 300))
     try:
         with metrics.open(encoding='utf-8') as stream:
@@ -162,10 +163,12 @@ def training_progress(run: Path, budget: int | None) -> tuple[dict, dict[str, li
                 latest = row
                 if row['iteration'] == 1 or row['iteration'] % stride == 0:
                     append_metrics(series, row)
+                append_terrain_level(terrain_levels, row, stride)
     except (OSError, ValueError) as exc:
         raise ArtifactError('无法读取 metrics.jsonl，训练指标格式无效。') from exc
     if latest and latest['iteration'] != 1 and latest['iteration'] % stride:
         append_metrics(series, latest)
+    series['terrain/mean_level'] = terrain_levels
     return latest, series
 
 
@@ -175,3 +178,16 @@ def append_metrics(series: dict[str, list[list]], row: dict) -> None:
         value = row.get(field)
         if finite_number(value):
             points.append([row['iteration'], value])
+
+
+def append_terrain_level(points: list[list], row: dict, stride: int) -> None:
+    """Keep the newest reported difficulty in each iteration interval."""
+    level = row.get('terrain/mean_level')
+    if not finite_number(level):
+        return
+    iteration = row['iteration']
+    point = [iteration, level]
+    if points and (points[-1][0] - 1) // stride == (iteration - 1) // stride:
+        points[-1] = point
+    else:
+        points.append(point)

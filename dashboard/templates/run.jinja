@@ -59,11 +59,15 @@
       <div><dt>训练轮次</dt><dd>{{ latest.get('iteration', '—') }}{% if budget %} / {{ budget }}{% endif %}</dd></div>
       <div><dt>环境步数</dt><dd>{{ latest.get('environment_steps', '—') }}</dd></div>
       <div><dt>策略更新次数</dt><dd>{{ latest.get('policy_updates', '—') }}</dd></div>
+      {% set terrain_levels = series.get('terrain/mean_level') %}
+      {% if terrain_levels %}
+      <div><dt>地形平均难度</dt><dd>{{ '%.2f'|format(terrain_levels[-1][1]) }} / 9</dd></div>
+      {% endif %}
     </dl>
     {% if latest %}
     <label class="chart-label">训练指标
       <select id="metric-select">
-        {% for field, label in [('real_reward', '实际奖励'), ('model_loss', '模型损失'), ('reset_fraction', '重置比例')] %}
+        {% for field, label in [('real_reward', '实际奖励'), ('model_loss', '模型损失'), ('reset_fraction', '重置比例'), ('terrain/mean_level', '地形平均难度')] %}
         {% if series[field] %}<option value="{{ field }}">{{ label }}</option>{% endif %}
         {% endfor %}
       </select>

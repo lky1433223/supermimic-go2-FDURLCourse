@@ -113,3 +113,20 @@ class DashboardTest(unittest.TestCase):
         self.assertEqual(result.status_code, 200)
         self.assertIn('1 / 40000', result.text)
         self.assertIn('[1, 0.25]', result.text)
+        self.assertNotIn('地形平均难度', result.text)
+
+    def test_sparse_terrain_levels_are_charted_and_show_the_latest_value(self) -> None:
+        """Show the newest terrain sample per interval even between sampled iterations."""
+        rows = [
+            {'iteration': 107, 'terrain/mean_level': 1.25},
+            {'iteration': 110, 'terrain/mean_level': 1.5},
+            {'iteration': 158, 'terrain/mean_level': 2.75},
+            {'iteration': 200, 'real_reward': 0.25},
+        ]
+        file = self.run / 'training' / 'metrics.jsonl'
+        file.write_text(''.join(json.dumps(row) + '\n' for row in rows), encoding='utf-8')
+        result = self.client.get(f'/runs/{self.run.name}')
+        self.assertEqual(result.status_code, 200)
+        self.assertIn('2.75 / 9', result.text)
+        self.assertIn('<option value="terrain/mean_level">地形平均难度</option>', result.text)
+        self.assertIn('"terrain/mean_level": [[110, 1.5], [158, 2.75]]', result.text)
