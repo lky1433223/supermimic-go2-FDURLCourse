@@ -536,7 +536,7 @@ Actor、Critic、奖励和终止仍使用原有定义。机器人控制配置一
 ### 第六阶段的包围式地形课程
 
 `configs/experiments/curriculum_supermimic_rewards_graded.yaml` 的最后一阶段引用
-`configs/courses/terrain_graded.yaml`，将并行环境分配给单台阶、坡道、连续楼梯和起伏地面。
+`configs/courses/terrain_graded.yaml`，将并行环境分配给单台阶、坡道和起伏地面。
 使用 `--course terrain_graded` 可以只启动这一阶段。原来的 `configs/courses/terrain.yaml` 供现有实验继续使用固定权重抽样。
 每类地形有 0–9 级，环境初始从 0–3 级均匀抽样。0 级是平地，首次通过后升到 1 级；随后只在同类障碍的 1–9 级间升降。
 机器人从地块中心出生，四周都有障碍，保留每 4 秒的随机指令。以机身越过地形外缘后连续 0.5 秒未摔倒为通过。
