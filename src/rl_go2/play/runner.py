@@ -33,6 +33,7 @@ def load_inputs(args: argparse.Namespace) -> tuple[dict, torch.nn.Module, Path, 
                   curriculum={'name': 'none'}, seed=args.seed)
     config['viewer_options'] = {'enable_help_text': False, 'enable_default_keybinds': False}
     config['vis_options'] = {
+        'shadow': False,
         'ambient_light': (0.35, 0.35, 0.35),
         'background_color': (0.18, 0.22, 0.27),
         'lights': [
